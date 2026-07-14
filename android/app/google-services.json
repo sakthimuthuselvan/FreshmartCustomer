@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "732067878436",
+    "project_id": "freshmart-3c4a7",
+    "storage_bucket": "freshmart-3c4a7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:732067878436:android:fc6f53d17f60ed35b4eab1",
+        "android_client_info": {
+          "package_name": "com.myapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDFKezewpcYS70VDS5VK4fKIjMiJZJnb3E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
