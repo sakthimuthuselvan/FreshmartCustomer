@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // Base API instance pointing to local development server IP
 const api = axios.create({
-  baseURL: 'http://10.209.116.102:3000/api',
+  baseURL: 'http://10.167.74.102:3000/api',
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json',

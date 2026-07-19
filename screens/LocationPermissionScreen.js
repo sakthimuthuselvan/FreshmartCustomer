@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   ActivityIndicator,
   StatusBar,
-  Image
+  Image,
+  PermissionsAndroid,
+  Platform,
+  BackHandler
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -17,21 +20,60 @@ export default function LocationPermissionScreen() {
   const { colors } = useTheme();
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    const backAction = () => {
+      // Prevent back navigation to Otp screen once authenticated
+      return true;
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      "hardwareBackPress",
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, []);
+
   const handleRequestLocation = async () => {
     setLoading(true);
-    // Simulate fetching GPS coordinates
-    setTimeout(() => {
-      setLoading(false);
-      // Route to Home and save default coordinates in state/global parameters
-      // Coords default to T. Nagar, Chennai
+    let hasPermission = false;
+
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          {
+            title: "FreshMart Location Service",
+            message: "FreshMart needs access to your location to find nearby stores and delivery areas.",
+            buttonNeutral: "Ask Me Later",
+            buttonNegative: "Cancel",
+            buttonPositive: "OK"
+          }
+        );
+        hasPermission = (granted === PermissionsAndroid.RESULTS.GRANTED);
+      } catch (err) {
+        console.warn('Native permission request failed:', err);
+      }
+    } else {
+      // iOS Simulator fallback
+      hasPermission = true;
+    }
+
+    setLoading(false);
+
+    if (hasPermission) {
+      // Set default Chennai coordinates on approval
       const coords = {
         latitude: 13.0406,
         longitude: 80.2337,
         addressText: 'Anna Nagar, Chennai'
       };
-      
       navigation.replace('Home', { coords });
-    }, 1500);
+    } else {
+      // Direct them to manual picker if permission is denied
+      alert("Location permission denied. Please search and select your location manually.");
+      navigation.replace('SelectLocation');
+    }
   };
 
   return (
@@ -84,13 +126,12 @@ export default function LocationPermissionScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => navigation.replace('Home')}
-            disabled={loading}
+            onPress={() => navigation.navigate('SelectLocation')}
             activeOpacity={0.7}
             className="py-3 items-center"
           >
             <Text style={{ color: colors.textMuted }} className="text-xs font-black">
-              Not Now
+              Select Location Manually
             </Text>
           </TouchableOpacity>
         </View>

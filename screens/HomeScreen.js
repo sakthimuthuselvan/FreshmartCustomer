@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import messaging from '@react-native-firebase/messaging';
 import {
   View,
   Text,
@@ -9,7 +10,11 @@ import {
   FlatList,
   ActivityIndicator,
   Dimensions,
-  StatusBar
+  StatusBar,
+  PermissionsAndroid,
+  Platform,
+  Animated,
+  PanResponder
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -65,6 +70,75 @@ const FALLBACK_PRODUCTS = [
   { _id: 'p6', name: 'Cucumber', unit: '1 kg', price: 25, image: 'https://images.unsplash.com/photo-1604977042946-1eeccd3428a4?w=250&auto=format&fit=crop&q=80' },
 ];
 
+const CAMPAIGN_BANNERS = [
+  {
+    id: '1',
+    title: 'Fresh Vegetables Deals',
+    subtitle: 'UP TO 50% OFF',
+    buttonText: 'Shop Now',
+    color: '#10b981', // Emerald green
+    image: require("../assets/Gemini_Generated_Image_ohi6lvohi6lvohi6.png"),
+    targetCategoryName: 'Veggies',
+    isFullImage: false
+  },
+  {
+    id: '2',
+    title: 'Farm Fresh Fruits',
+    subtitle: 'WEEKEND SPECIAL',
+    buttonText: 'Grab Offer',
+    color: '#f59e0b', // Amber orange
+    image: require("../assets/ecom_assets/splash_screen_veg.png"),
+    targetCategoryName: 'Fruits',
+    isFullImage: false
+  },
+  {
+    id: '3',
+    isFullImage: true, // Displays full-bleed designed banner graphic
+    color: '#ffffff',
+    image: require("../assets/ecom_assets/splash_screen_veg1.png"),
+    targetCategoryName: 'Veggies'
+  },
+  {
+    id: '4',
+    title: 'Baked Goods & Sweets',
+    subtitle: 'FRESH DAILY',
+    buttonText: 'Order Now',
+    color: '#6366f1', // Indigo blue
+    image: require("../assets/ecom_assets/login_screen_bag.png"),
+    targetCategoryName: 'Bakery',
+    isFullImage: false
+  }
+];
+
+// Haversine formula to compute distance in KM
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Ray-casting Point-in-Polygon (PIP) check
+function isPointInPolygon(point, polygon) {
+  if (!polygon || polygon.length < 3) return false;
+  const x = point[0], y = point[1];
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+
+    const intersect = ((yi > y) !== (yj > y))
+      && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 export default function HomeScreen() {
   const navigation = useNavigation();
   const route = useRoute();
@@ -86,8 +160,163 @@ export default function HomeScreen() {
   const [couponSuccess, setCouponSuccess] = useState('');
 
   const coords = route.params?.coords || {
-    addressText: 'Home - 12, Anna Nagar'
+    latitude: 13.0406,
+    longitude: 80.2337,
+    addressText: 'Anna Nagar, Chennai'
   };
+
+  // Foreground toast notification states
+  const [toastTitle, setToastTitle] = useState('');
+  const [toastBody, setToastBody] = useState('');
+  const [toastImage, setToastImage] = useState(null);
+  const [toastIsFullImage, setToastIsFullImage] = useState(false);
+  const [toastVisible, setToastVisible] = useState(false);
+  const slideAnim = useRef(new Animated.Value(-150)).current;
+  const pan = useRef(new Animated.ValueXY()).current;
+
+  // Banner Carousel States
+  const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
+  const bannerRef = useRef(null);
+
+  useEffect(() => {
+    if (CAMPAIGN_BANNERS.length <= 1) return;
+    const interval = setInterval(() => {
+      const nextIndex = (currentBannerIndex + 1) % CAMPAIGN_BANNERS.length;
+      setCurrentBannerIndex(nextIndex);
+      bannerRef.current?.scrollToIndex({
+        index: nextIndex,
+        animated: true
+      });
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [currentBannerIndex]);
+
+  const handleBannerScroll = (event) => {
+    const slideSize = event.nativeEvent.layoutMeasurement.width;
+    if (slideSize <= 0) return;
+    const offset = event.nativeEvent.contentOffset.x;
+    const activeIndex = Math.round(offset / slideSize);
+    if (activeIndex !== currentBannerIndex && activeIndex >= 0 && activeIndex < CAMPAIGN_BANNERS.length) {
+      setCurrentBannerIndex(activeIndex);
+    }
+  };
+
+  const getItemLayout = (data, index) => ({
+    length: Dimensions.get('window').width - 40,
+    offset: (Dimensions.get('window').width - 30) * index,
+    index
+  });
+
+  // Swipe-to-dismiss gesture setup
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (evt, gestureState) => {
+        pan.setValue({ x: gestureState.dx, y: 0 });
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        // If swiped more than 120px horizontally, dismiss the toast
+        if (Math.abs(gestureState.dx) > 120) {
+          Animated.timing(pan, {
+            toValue: { x: gestureState.dx > 0 ? 500 : -500, y: 0 },
+            duration: 200,
+            useNativeDriver: true
+          }).start(() => {
+            setToastVisible(false);
+            pan.setValue({ x: 0, y: 0 });
+          });
+        } else {
+          // Snap back to center
+          Animated.spring(pan, {
+            toValue: { x: 0, y: 0 },
+            useNativeDriver: true
+          }).start();
+        }
+      }
+    })
+  ).current;
+
+  const triggerToast = (title, body, imageUrl = null, isFullImage = false) => {
+    pan.setValue({ x: 0, y: 0 }); // Reset swipe offsets
+    setToastTitle(title);
+    setToastBody(body);
+    setToastImage(imageUrl);
+    setToastIsFullImage(isFullImage);
+    setToastVisible(true);
+
+    // Slide down
+    Animated.spring(slideAnim, {
+      toValue: 40, // offset from top, cleared status bar safe-zone
+      tension: 40,
+      friction: 8,
+      useNativeDriver: true
+    }).start();
+
+    // Slide up after 4.5 seconds
+    setTimeout(() => {
+      Animated.timing(slideAnim, {
+        toValue: -150,
+        duration: 350,
+        useNativeDriver: true
+      }).start(() => {
+        setToastVisible(false);
+      });
+    }, 4500);
+  };
+
+  const handleNotificationRedirect = (remoteMessage) => {
+    if (remoteMessage?.data?.targetCategory) {
+      const targetCat = remoteMessage.data.targetCategory;
+      const match = categories.find(c => c.name.toLowerCase() === targetCat.toLowerCase());
+      if (match) {
+        navigation.navigate('ProductListing', { categoryId: match._id, categoryName: match.name });
+      }
+    }
+  };
+
+  useEffect(() => {
+    // Listen for foreground push notifications
+    try {
+      const unsubscribe = messaging().onMessage(async remoteMessage => {
+        console.log('📣 [FCM Foreground] Push received:', remoteMessage);
+        if (remoteMessage.notification) {
+          const imageUrl = remoteMessage.notification.android?.imageUrl || 
+                           remoteMessage.notification.imageUrl || 
+                           remoteMessage.data?.imageUrl || null;
+          const isFullImage = remoteMessage.data?.isFullImage === 'true';
+          triggerToast(
+            remoteMessage.notification.title,
+            remoteMessage.notification.body,
+            imageUrl,
+            isFullImage
+          );
+        }
+      });
+
+      // Handle notification click when app is running in background
+      const onNotificationOpenUnsubscribe = messaging().onNotificationOpenedApp(remoteMessage => {
+        console.log('📣 [FCM Background] App opened from notification:', remoteMessage);
+        handleNotificationRedirect(remoteMessage);
+      });
+
+      // Check if app was launched from a completely terminated/closed state via notification
+      messaging().getInitialNotification().then(remoteMessage => {
+        if (remoteMessage) {
+          console.log('📣 [FCM Closed State] App launched from notification:', remoteMessage);
+          setTimeout(() => {
+            handleNotificationRedirect(remoteMessage);
+          }, 1000);
+        }
+      });
+
+      return () => {
+        unsubscribe();
+        onNotificationOpenUnsubscribe();
+      };
+    } catch (e) {
+      console.log('FCM listeners setup failed:', e.message);
+    }
+  }, [categories]);
 
   const getCouponDiscount = () => {
     if (!appliedCoupon) return 0;
@@ -187,10 +416,96 @@ export default function HomeScreen() {
 
   useEffect(() => {
     fetchInitialData();
-  }, []);
+  }, [coords.latitude, coords.longitude]);
+
+  const registerFCM = async () => {
+    try {
+      // Request native OS notification permission on Android 13+ (API 33+)
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        const hasPermission = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        );
+        if (!hasPermission) {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+            {
+              title: "FreshMart Notifications Access",
+              message: "FreshMart needs notification permissions to send you real-time order tracking updates.",
+              buttonNeutral: "Ask Me Later",
+              buttonNegative: "Cancel",
+              buttonPositive: "OK"
+            }
+          );
+        }
+      }
+
+      const authStatus = await messaging().requestPermission();
+      const enabled =
+        authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+        authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+
+      if (enabled) {
+        const token = await messaging().getToken();
+        console.log('📣 [FCM Device Token]:', token);
+        if (token) {
+          await api.patch('/customer/profile', { fcmToken: token });
+        }
+      }
+    } catch (err) {
+      console.log('FCM Token registration skipped/failed:', err.message);
+    }
+  };
 
   const fetchInitialData = async () => {
     setLoading(true);
+
+    // Validate delivery zones and operational status
+    try {
+      const settingsRes = await api.get('/settings');
+      if (settingsRes.data.settings) {
+        const settings = settingsRes.data.settings;
+        if (settings.isUnderMaintenance) {
+          navigation.replace('Maintenance', {
+            message: settings.maintenanceMessage || 'We are doing some updates. Please try again later.'
+          });
+          return;
+        }
+
+        if (!settings.isStoreOpen) {
+          navigation.replace('ShopClosed');
+          return;
+        }
+
+        const customerLat = coords.latitude || 13.0406;
+        const customerLng = coords.longitude || 80.2337;
+
+        if (settings.zoneType === 'CIRCLE') {
+          const distance = calculateDistance(
+            settings.storeLatitude,
+            settings.storeLongitude,
+            customerLat,
+            customerLng
+          );
+          if (distance > settings.deliveryRadius) {
+            navigation.replace('OutsideRadius', {
+              message: `We currently deliver only within a ${settings.deliveryRadius} KM radius from our store. Your address is ${distance.toFixed(1)} KM away.`
+            });
+            return;
+          }
+        } else if (settings.zoneType === 'POLYGON') {
+          const inside = isPointInPolygon([customerLat, customerLng], settings.deliveryPolygon);
+          if (!inside) {
+            navigation.replace('OutsideRadius', {
+              message: 'Your address falls outside our custom delivery polygon zone.'
+            });
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      console.log('Failed to check operational bounds, continuing with mock parameters:', err.message);
+    }
+
     try {
       const [prodRes, catRes] = await Promise.all([
         api.get('/products'),
@@ -203,6 +518,9 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
+
+    // Register push notification token
+    registerFCM();
   };
 
   const fetchOrders = async () => {
@@ -302,26 +620,91 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Green Discount Slider Card (Mockup 05) */}
-        <View className="px-5 py-2">
-          <View
-            style={{ backgroundColor: colors.primary }}
-            className="rounded-3xl p-5 relative overflow-hidden flex-row justify-between items-center shadow-lg"
-          >
-            <View className="z-10 max-w-[60%] space-y-2">
-              <View className="bg-white/20 border border-white/30 rounded-full px-3 py-1 self-start">
-                <Text className="text-[9px] font-extrabold text-white uppercase tracking-wider">UP TO 50% OFF</Text>
-              </View>
-              <Text className="text-lg font-black text-white leading-tight">Fresh Vegetables Deals</Text>
-              <TouchableOpacity className="bg-white rounded-full px-4 py-1.5 self-start mt-2">
-                <Text style={{ color: colors.primary }} className="text-[10px] font-black">Shop Now</Text>
-              </TouchableOpacity>
-            </View>
-            <Image
-              source={require("../assets/Gemini_Generated_Image_ohi6lvohi6lvohi6.png")}
-              className="w-28 h-28 rounded-2xl"
-              resizeMode="contain"
-            />
+        {/* Premium Auto-Playing Banner Carousel Slider */}
+        <View className="py-2.5 relative">
+          <FlatList
+            ref={bannerRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            data={CAMPAIGN_BANNERS}
+            keyExtractor={(item) => item.id}
+            getItemLayout={getItemLayout}
+            onScroll={handleBannerScroll}
+            snapToInterval={Dimensions.get('window').width - 30}
+            decelerationRate="fast"
+            snapToAlignment="start"
+            contentContainerStyle={{ paddingHorizontal: 20 }}
+            renderItem={({ item }) => {
+              const cardWidth = Dimensions.get('window').width - 40;
+              return (
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => {
+                    const match = categories.find(c => c.name.toLowerCase() === item.targetCategoryName.toLowerCase());
+                    if (match) {
+                      navigation.navigate('ProductListing', { categoryId: match._id, categoryName: match.name });
+                    } else {
+                      setActiveTab('Categories');
+                    }
+                  }}
+                  style={{
+                    width: cardWidth,
+                    backgroundColor: item.color,
+                    marginRight: 10
+                  }}
+                  className="rounded-3xl relative overflow-hidden shadow-lg h-36"
+                >
+                  {item.isFullImage ? (
+                    // Render custom designed graphic image covering the whole card
+                    <Image
+                      source={item.image}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    // Render dynamic template layout card
+                    <View className="flex-1 p-5 flex-row justify-between items-center">
+                      <View className="z-10 max-w-[62%] space-y-1">
+                        <View className="bg-white/20 border border-white/30 rounded-full px-2.5 py-0.5 self-start">
+                          <Text className="text-[9px] font-extrabold text-white uppercase tracking-wider">
+                            {item.subtitle}
+                          </Text>
+                        </View>
+                        <Text className="text-base font-black text-white leading-tight">
+                          {item.title}
+                        </Text>
+                        <View className="bg-white rounded-full px-3.5 py-1.5 self-start mt-2">
+                          <Text style={{ color: item.color }} className="text-[9px] font-black">
+                            {item.buttonText}
+                          </Text>
+                        </View>
+                      </View>
+                      <Image
+                        source={item.image}
+                        className="w-24 h-24 rounded-2xl absolute right-3 bottom-3"
+                        resizeMode="contain"
+                      />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            }}
+          />
+
+          {/* Pagination Indicators */}
+          <View className="flex-row justify-center items-center mt-3 gap-1.5">
+            {CAMPAIGN_BANNERS.map((_, index) => (
+              <View
+                key={index}
+                style={{
+                  backgroundColor: currentBannerIndex === index ? colors.primary : '#cbd5e1',
+                  width: currentBannerIndex === index ? 16 : 6,
+                  height: 6,
+                  borderRadius: 3
+                }}
+                className="transition-all duration-300"
+              />
+            ))}
           </View>
         </View>
 
@@ -544,7 +927,7 @@ export default function HomeScreen() {
             <TouchableOpacity className="p-1">
               <Heart size={20} color={colors.textMain} />
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => navigation.navigate('Search')}
               className="p-1"
             >
@@ -734,7 +1117,7 @@ export default function HomeScreen() {
                     />
                   </View>
                   {appliedCoupon ? (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={handleRemoveCoupon}
                       style={{ paddingVertical: 10, paddingHorizontal: 16 }}
                       className="bg-red-500/10 rounded-xl border border-red-500/25"
@@ -743,7 +1126,7 @@ export default function HomeScreen() {
                       <Text className="text-red-500 text-xs font-black">Remove</Text>
                     </TouchableOpacity>
                   ) : (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={handleApplyCoupon}
                       style={{ paddingVertical: 10, paddingHorizontal: 16 }}
                       className="bg-emerald-500/10 rounded-xl border border-emerald-500/25"
@@ -812,9 +1195,9 @@ export default function HomeScreen() {
             {/* Checkout Button */}
             <View className="py-4">
               <TouchableOpacity
-                onPress={() => navigation.navigate('Checkout', { 
-                  coords, 
-                  appliedCoupon: appliedCoupon ? appliedCoupon.code : null 
+                onPress={() => navigation.navigate('Checkout', {
+                  coords,
+                  appliedCoupon: appliedCoupon ? appliedCoupon.code : null
                 })}
                 style={{ backgroundColor: colors.primary }}
                 className="rounded-2xl py-4 items-center shadow-md shadow-emerald-700/25"
@@ -1155,6 +1538,63 @@ export default function HomeScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Premium Foreground Sliding Toast Notification Banner */}
+      {toastVisible && (
+        <Animated.View
+          {...panResponder.panHandlers}
+          style={{
+            position: 'absolute',
+            left: 16,
+            right: 16,
+            transform: [{ translateY: slideAnim }, { translateX: pan.x }],
+            zIndex: 9999,
+            backgroundColor: 'white',
+            borderRadius: 20,
+            padding: toastIsFullImage && toastImage ? 0 : 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 10 },
+            shadowOpacity: 0.15,
+            shadowRadius: 16,
+            elevation: 10,
+            borderWidth: 1,
+            borderColor: '#f1f5f9',
+            height: toastIsFullImage && toastImage ? 110 : 'auto',
+            overflow: 'hidden'
+          }}
+        >
+          {toastIsFullImage && toastImage ? (
+            <Image
+              source={{ uri: toastImage }}
+              className="w-full h-full"
+              resizeMode="cover"
+            />
+          ) : (
+            <>
+              <View style={{ backgroundColor: colors.primaryLight, padding: 10, borderRadius: 14, marginRight: 12 }}>
+                <Bell size={22} color={colors.primary} fill={colors.primary + '30'} />
+              </View>
+              <View style={{ flex: 1, marginRight: toastImage ? 10 : 0 }}>
+                <Text style={{ color: colors.textMain, fontWeight: '900', fontSize: 14 }}>
+                  {toastTitle}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontWeight: '700', fontSize: 11, mt: 1 }} numberOfLines={2}>
+                  {toastBody}
+                </Text>
+              </View>
+              {toastImage && (
+                <Image
+                  source={{ uri: toastImage }}
+                  className="w-14 h-14 rounded-xl border border-slate-100 bg-slate-50"
+                  resizeMode="cover"
+                />
+              )}
+            </>
+          )}
+        </Animated.View>
+      )}
     </SafeAreaView>
   );
 }

@@ -23,6 +23,7 @@ import NoInternetScreen from "./screens/NoInternetScreen";
 import ShopClosedScreen from "./screens/ShopClosedScreen";
 import OutsideRadiusScreen from "./screens/OutsideRadiusScreen";
 import MaintenanceScreen from "./screens/MaintenanceScreen";
+import SelectLocationScreen from "./screens/SelectLocationScreen";
 import SearchScreen from "./screens/SearchScreen";
 
 const Stack = createStackNavigator();
@@ -57,6 +58,7 @@ export default function App() {
               <Stack.Screen options={{ animation: "fade" }} name="ShopClosed" component={ShopClosedScreen} />
               <Stack.Screen options={{ animation: "fade" }} name="OutsideRadius" component={OutsideRadiusScreen} />
               <Stack.Screen options={{ animation: "fade" }} name="Maintenance" component={MaintenanceScreen} />
+              <Stack.Screen options={{ animation: "fade" }} name="SelectLocation" component={SelectLocationScreen} />
               <Stack.Screen options={{ animation: "fade" }} name="Search" component={SearchScreen} />
             </Stack.Navigator>
           </NavigationContainer>
