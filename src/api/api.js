@@ -1,13 +1,36 @@
 import axios from 'axios';
+import { NativeModules } from 'react-native';
 
-// Base API instance pointing to local development server IP
+// Dynamically resolve local development server IP from Metro bundle URL
+export const getDevHostIp = () => {
+  try {
+    const scriptURL = NativeModules.SourceCode?.scriptURL;
+    if (scriptURL) {
+      const match = scriptURL.match(/http:\/\/([^:]+):/);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+  } catch (e) {
+    // fallback
+  }
+  return 'localhost';
+};
+
+const initialIp = getDevHostIp();
+const rawBaseUrl = process.env.API_BASE_URL || process.env.EXPO_PUBLIC_API_URL || process.env.API_URL || `http://${initialIp}:3000`;
+const BASE_URL = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl}/api`;
+console.log('[API Config] Active server host URL:', BASE_URL);
+
+// Base API instance
 const api = axios.create({
-  baseURL: 'http://10.167.74.102:3000/api',
+  baseURL: BASE_URL,
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -24,6 +47,8 @@ export const setAuthToken = (token) => {
 // Request interceptor to automatically attach authorization header
 api.interceptors.request.use(
   async (config) => {
+    const activeIp = getDevHostIp();
+    config.baseURL = `http://${activeIp}:3000/api`;
     let token = userToken;
     if (!token) {
       try {
@@ -35,9 +60,14 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
+    // 🌐 Log outbound HTTP request
+    console.log(`🌐 [NETWORK REQUEST] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config.data ? config.data : '');
+
     return config;
   },
   (error) => {
+    console.log(`❌ [NETWORK REQUEST ERROR]`, error);
     return Promise.reject(error);
   }
 );
@@ -62,12 +92,15 @@ const mapPrices = (obj) => {
 // Response interceptor to format incoming prices
 api.interceptors.response.use(
   (response) => {
+    // ✅ Log incoming HTTP response
+    console.log(`✅ [NETWORK RESPONSE ${response.status}] ${response.config.url}`, response.data);
     if (response.data) {
       response.data = mapPrices(response.data);
     }
     return response;
   },
   (error) => {
+    console.log(`❌ [NETWORK ERROR ${error.response?.status || 'FAIL'}] ${error.config?.url}`, error.response?.data || error.message);
     return Promise.reject(error);
   }
 );

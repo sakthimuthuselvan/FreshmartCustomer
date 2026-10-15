@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, Image, StatusBar } from 'react-native';
+import { View, TouchableOpacity, Image, StatusBar } from 'react-native';
+import Text from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
@@ -23,7 +24,7 @@ export default function ShopClosedScreen() {
         <Text style={{ color: colors.textMuted }} className="text-xs font-bold text-center leading-relaxed px-4 mb-10">
           Shop is Closed. We are currently closed. Please visit us during our working hours.
         </Text>
-        
+
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           style={{ backgroundColor: colors.primary }}

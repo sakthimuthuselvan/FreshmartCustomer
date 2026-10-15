@@ -1,25 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
-  TextInput,
   ScrollView,
   StatusBar,
   ActivityIndicator,
   StyleSheet,
   BackHandler
 } from 'react-native';
+import Text from '../components/AppText';
+import TextInput from '../components/AppTextInput';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
-import { ChevronLeft, MapPin, Search, Compass, ChevronRight } from 'lucide-react-native';
+import { ChevronLeft, MapPin, Search, Compass, ChevronRight, Navigation } from 'lucide-react-native';
 import { WebView } from 'react-native-webview';
 import axios from 'axios';
 import api from '../src/api/api';
 
 export default function SelectLocationScreen() {
   const navigation = useNavigation();
+  const route = useRoute();
   const { colors } = useTheme();
   const webViewRef = useRef(null);
 
@@ -63,7 +64,47 @@ export default function SelectLocationScreen() {
   // User location parameters
   const [latitude, setLatitude] = useState(13.0406); // Default: T. Nagar
   const [longitude, setLongitude] = useState(80.2337);
-  const [addressText, setAddressText] = useState('T. Nagar, Chennai');
+  const [addressText, setAddressText] = useState('Anna Nagar 3rd Main Rd, Chennai');
+  const [locationDetails, setLocationDetails] = useState({
+    street: 'Anna Nagar 3rd Main Rd',
+    city: 'Chennai',
+    pincode: '600040'
+  });
+
+  const reverseGeocodeTimeout = useRef(null);
+
+  const reverseGeocodeMapCoords = (lat, lon) => {
+    if (reverseGeocodeTimeout.current) clearTimeout(reverseGeocodeTimeout.current);
+    reverseGeocodeTimeout.current = setTimeout(async () => {
+      try {
+        const res = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`,
+          { headers: { 'User-Agent': 'FreshMartCustomerApp/1.0' } }
+        );
+        if (res.data) {
+          const addr = res.data.address || {};
+          const street = addr.road || addr.suburb || addr.neighbourhood || addr.residential || 'Selected Street Location';
+          const city = addr.city || addr.town || addr.county || addr.state_district || 'Chennai';
+          const pincode = addr.postcode || '600040';
+          const parts = [];
+          if (street) parts.push(street);
+          if (addr.suburb && addr.suburb !== street) parts.push(addr.suburb);
+          if (city) parts.push(city);
+          const fullText = parts.length > 0 ? parts.join(', ') : res.data.display_name;
+
+          setAddressText(fullText);
+          setLocationDetails({
+            street,
+            city,
+            pincode,
+            fullAddress: fullText
+          });
+        }
+      } catch (err) {
+        console.log('Reverse geocoding error:', err.message);
+      }
+    }, 300);
+  };
 
   // Delivery radius parameters
   const [distance, setDistance] = useState(0);
@@ -136,21 +177,15 @@ export default function SelectLocationScreen() {
 
   // Handle autocomplete query triggers using OpenStreetMap Nominatim Search
   const handleAddressSearch = (text) => {
-    console.log("text ", text);
-
     setSearchQuery(text);
     if (text.trim().length < 3) {
       setSearchResults([]);
       return;
     }
-    console.log("11111111");
 
     if (searchTimeout.current) {
-      console.log("22222222");
-
       clearTimeout(searchTimeout.current);
     }
-    console.log("333333333333");
 
     setSearching(true);
     searchTimeout.current = setTimeout(async () => {
@@ -191,6 +226,12 @@ export default function SelectLocationScreen() {
     setLatitude(preset.latitude);
     setLongitude(preset.longitude);
     setAddressText(preset.name);
+    setLocationDetails({
+      street: preset.name,
+      city: 'Chennai',
+      pincode: '600040',
+      fullAddress: preset.name
+    });
     setSearchQuery('');
     setSearchResults([]);
 
@@ -208,12 +249,105 @@ export default function SelectLocationScreen() {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'MOVE') {
-        setLatitude(Number(data.latitude.toFixed(6)));
-        setLongitude(Number(data.longitude.toFixed(6)));
-        setAddressText('Map Selected Coordinates');
+        const lat = Number(data.latitude.toFixed(6));
+        const lon = Number(data.longitude.toFixed(6));
+        setLatitude(lat);
+        setLongitude(lon);
+        setAddressText('Fetching location address...');
+        reverseGeocodeMapCoords(lat, lon);
       }
     } catch (e) {
       console.log('Error decoding webview payload:', e);
+    }
+  };
+
+  const [detectingGPS, setDetectingGPS] = useState(false);
+
+  // Floating map recenter button (keeps user on map preview)
+  const handleRecenterMapGPS = () => {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(6));
+          const lon = Number(pos.coords.longitude.toFixed(6));
+          setLatitude(lat);
+          setLongitude(lon);
+          webViewRef.current?.postMessage(JSON.stringify({ type: 'PAN_TO', latitude: lat, longitude: lon }));
+          reverseGeocodeMapCoords(lat, lon);
+        },
+        () => {
+          webViewRef.current?.postMessage(JSON.stringify({ type: 'LOCATE_GPS' }));
+        }
+      );
+    } else {
+      webViewRef.current?.postMessage(JSON.stringify({ type: 'LOCATE_GPS' }));
+    }
+  };
+
+  // Main Bottom "⚡ Use Current Location" Button (gets GPS & opens Save / Receiver Name Dialog)
+  const handleUseCurrentGPS = async () => {
+    setDetectingGPS(true);
+    setAddressText('Detecting GPS location...');
+
+    const processGPSAndOpenSaveDialog = async (lat, lon) => {
+      setLatitude(lat);
+      setLongitude(lon);
+
+      let street = 'Anna Nagar 3rd Main Rd';
+      let city = 'Chennai';
+      let pincode = '600040';
+      let fullText = 'Anna Nagar 3rd Main Rd, Chennai';
+
+      try {
+        const res = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`,
+          { headers: { 'User-Agent': 'FreshMartCustomerApp/1.0' } }
+        );
+        if (res.data) {
+          const addr = res.data.address || {};
+          street = addr.road || addr.suburb || addr.neighbourhood || addr.residential || 'Selected Street Location';
+          city = addr.city || addr.town || addr.county || addr.state_district || 'Chennai';
+          pincode = addr.postcode || '600040';
+          const parts = [];
+          if (street) parts.push(street);
+          if (addr.suburb && addr.suburb !== street) parts.push(addr.suburb);
+          if (city) parts.push(city);
+          fullText = parts.length > 0 ? parts.join(', ') : res.data.display_name;
+        }
+      } catch (err) {
+        console.log('GPS reverse geocode error:', err.message);
+      }
+
+      const coords = {
+        latitude: lat,
+        longitude: lon,
+        addressText: fullText,
+        street,
+        city,
+        pincode
+      };
+
+      setDetectingGPS(false);
+
+      // Return to AddressScreen to open Receiver Name & Save Address Dialog
+      navigation.navigate('Address', { selectedAddressFromMap: coords });
+    };
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(6));
+          const lon = Number(pos.coords.longitude.toFixed(6));
+          processGPSAndOpenSaveDialog(lat, lon);
+        },
+        (err) => {
+          console.log('Browser geolocation error, using default coordinates:', err.message);
+          processGPSAndOpenSaveDialog(13.0406, 80.2337);
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+    } else {
+      processGPSAndOpenSaveDialog(13.0406, 80.2337);
     }
   };
 
@@ -221,9 +355,16 @@ export default function SelectLocationScreen() {
     const coords = {
       latitude,
       longitude,
-      addressText
+      addressText,
+      street: locationDetails.street || 'Selected Location',
+      city: locationDetails.city || 'Chennai',
+      pincode: locationDetails.pincode || '600040'
     };
-    navigation.replace('Home', { coords });
+    if (route.params?.returnToAddressScreen || route.params?.fromAddressScreen || true) {
+      navigation.navigate('Address', { selectedAddressFromMap: coords });
+    } else {
+      navigation.replace('Home', { coords });
+    }
   };
 
   // Compile Leaflet script inside HTML file to load in WebView
@@ -309,7 +450,7 @@ export default function SelectLocationScreen() {
             }));
           });
 
-          // Teleport listener
+          // Teleport & GPS listener
           window.addEventListener('message', function(event) {
             try {
               var data = JSON.parse(event.data);
@@ -317,6 +458,25 @@ export default function SelectLocationScreen() {
                 var pos = [data.latitude, data.longitude];
                 userMarker.setLatLng(pos);
                 map.panTo(pos);
+              } else if (data.type === 'LOCATE_GPS') {
+                if (navigator.geolocation) {
+                  navigator.geolocation.getCurrentPosition(function(position) {
+                    var pos = [position.coords.latitude, position.coords.longitude];
+                    userMarker.setLatLng(pos);
+                    map.panTo(pos);
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'MOVE',
+                      latitude: position.coords.latitude,
+                      longitude: position.coords.longitude
+                    }));
+                  }, function(err) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'MOVE',
+                      latitude: userMarker.getLatLng().lat,
+                      longitude: userMarker.getLatLng().lng
+                    }));
+                  });
+                }
               }
             } catch(e) {}
           });
@@ -355,7 +515,7 @@ export default function SelectLocationScreen() {
       <View className="flex-1 p-5 relative">
 
         {/* Real Address Autocomplete Search Input */}
-        <View style={{ backgroundColor: colors.card, borderColor: colors.border }} className="flex-row items-center px-4 py-3.5 rounded-2xl border mb-4 z-20 shadow-sm">
+        <View style={{ backgroundColor: colors.card, borderColor: colors.border }} className="flex-row items-center px-4 py-3.5 rounded-2xl border mb-3 z-20 shadow-sm">
           <Search size={18} color={colors.textMuted} className="mr-3" />
           <TextInput
             placeholder="Search address, mall, or street..."
@@ -393,7 +553,7 @@ export default function SelectLocationScreen() {
         ) : (
           <>
             {/* Interactive Map Visualizer Container (WebView) */}
-            <View className="flex-1 w-full rounded-[32px] overflow-hidden border border-slate-100 mb-5 relative bg-slate-50 z-10 shadow-sm">
+            <View className="flex-1 w-full rounded-[32px] overflow-hidden border border-slate-100 mb-4 relative bg-slate-50 z-10 shadow-sm">
               <WebView
                 ref={webViewRef}
                 originWhitelist={['*']}
@@ -404,45 +564,90 @@ export default function SelectLocationScreen() {
               />
 
               {/* Centered target pin overlay reference */}
-              <View className="absolute inset-0 items-center justify-center pointer-events-none opacity-40">
-                <Compass size={24} color={colors.primary} />
+              <View className="absolute inset-0 items-center justify-center pointer-events-none opacity-30">
+                <Compass size={28} color={colors.primary} />
               </View>
+
+              {/* Floating Recenter Location Button */}
+              <TouchableOpacity
+                onPress={handleRecenterMapGPS}
+                activeOpacity={0.85}
+                className="absolute bottom-4 right-4 bg-white w-12 h-12 rounded-2xl items-center justify-center shadow-lg border border-slate-200 z-30"
+              >
+                {detectingGPS ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Navigation size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
             </View>
 
-            {/* Status/Details overlay panel */}
-            <View style={{ borderColor: colors.border, backgroundColor: colors.card }} className="border rounded-2xl p-4 mb-4">
-              <Text style={{ color: colors.textMain }} className="text-xs font-black truncate mb-2.5">
-                📍 {addressText}
-              </Text>
+            {/* Address & Delivery Zone Info Card */}
+            <View style={{ borderColor: colors.border, backgroundColor: colors.card }} className="border rounded-3xl p-4 mb-3 shadow-xs">
+              <View className="flex-row items-start gap-3">
+                <View className="w-9 h-9 rounded-2xl bg-emerald-500/10 items-center justify-center border border-emerald-500/20 mt-0.5">
+                  <MapPin size={18} color={colors.primary} />
+                </View>
+                <View className="flex-1">
+                  <Text style={{ color: colors.textMuted }} className="text-[10px] font-black uppercase tracking-wider">
+                    Location Pin Address
+                  </Text>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-black leading-snug mt-0.5">
+                    {addressText}
+                  </Text>
+                </View>
+              </View>
 
               <View
                 style={{
                   borderColor: isDeliverable ? '#10b981' : '#ef4444',
                   backgroundColor: isDeliverable ? '#ecfdf5' : '#fef2f2'
                 }}
-                className="w-full border rounded-xl px-3 py-2.5 flex-row items-center justify-between"
+                className="w-full border rounded-2xl px-3.5 py-2 mt-3 flex-row items-center justify-between"
               >
                 <Text style={{ color: isDeliverable ? '#059669' : '#dc2626' }} className="text-xs font-black">
-                  {isDeliverable ? '🟢 Delivery Available' : '🔴 Outside Delivery Zone'}
+                  {isDeliverable ? '🟢 Delivery Available' : '🔴 Outside Operational Zone'}
                 </Text>
-                <Text style={{ color: isDeliverable ? '#059669' : '#dc2626' }} className="text-[10px] font-bold">
+                <Text style={{ color: isDeliverable ? '#059669' : '#dc2626' }} className="text-[11px] font-extrabold">
                   {distance.toFixed(1)} KM from store
                 </Text>
               </View>
             </View>
 
-            {/* Confirm Selection Action Button */}
-            <TouchableOpacity
-              onPress={handleConfirmLocation}
-              style={{
-                backgroundColor: isDeliverable ? colors.primary : '#94a3b8',
-                shadowColor: colors.primary
-              }}
-              disabled={!isDeliverable}
-              className="w-full rounded-2xl py-4.5 items-center justify-center shadow-md shadow-emerald-700/20 mb-2 z-10"
-            >
-              <Text className="text-white font-extrabold text-base">Confirm & Select Location</Text>
-            </TouchableOpacity>
+            {/* Action Buttons: Use Current Location & Confirm Selection */}
+            <View className="mb-2 z-20">
+              {/* ⚡ Use Current Location Button */}
+              <TouchableOpacity
+                onPress={handleUseCurrentGPS}
+                disabled={detectingGPS}
+                style={{ marginBottom: 12 }}
+                className="w-full bg-emerald-950 border border-emerald-800 rounded-2xl py-3.5 px-4 flex-row items-center justify-center gap-2 shadow-sm"
+              >
+                {detectingGPS ? (
+                  <ActivityIndicator size="small" color="#34d399" />
+                ) : (
+                  <Navigation size={18} color="#34d399" />
+                )}
+                <Text className="text-emerald-100 font-extrabold text-xs">
+                  {detectingGPS ? 'Detecting Live GPS Location...' : '⚡ Use Current Location'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* Confirm Selection Main CTA Button */}
+              <TouchableOpacity
+                onPress={handleConfirmLocation}
+                style={{
+                  backgroundColor: isDeliverable ? colors.primary : '#94a3b8',
+                  shadowColor: colors.primary
+                }}
+                disabled={!isDeliverable}
+                className="w-full rounded-2xl py-4 items-center justify-center shadow-md shadow-emerald-700/20"
+              >
+                <Text className="text-white font-extrabold text-sm uppercase tracking-wide">
+                  Confirm & Select Location
+                </Text>
+              </TouchableOpacity>
+            </View>
           </>
         )}
 

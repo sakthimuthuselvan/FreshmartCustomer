@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import messaging from '@react-native-firebase/messaging';
 import {
   View,
-  Text,
   TouchableOpacity,
   ScrollView,
   Image,
@@ -14,8 +13,13 @@ import {
   PermissionsAndroid,
   Platform,
   Animated,
-  PanResponder
+  PanResponder,
+  BackHandler,
+  Modal,
+  Alert,
+  RefreshControl
 } from 'react-native';
+import Text from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
@@ -44,8 +48,14 @@ import {
   Clock,
   HelpCircle,
   Info,
-  Settings
+  Settings,
+  X,
+  Tag,
+  Check
 } from 'lucide-react-native';
+import CartScreen from './CartScreen';
+import DynamicFeedSection from '../components/DynamicFeedSection';
+import ProductCard from '../components/ProductCard';
 
 const { width } = Dimensions.get('window');
 
@@ -146,12 +156,50 @@ export default function HomeScreen() {
   const { cart, addToCart, removeFromCart, getCartTotal, getCartCount } = useCart();
 
   const [activeTab, setActiveTab] = useState('Home');
+  const [tabHistory, setTabHistory] = useState(['Home']);
   const [products, setProducts] = useState(FALLBACK_PRODUCTS);
+
+  const handleTabSwitch = (newTab) => {
+    if (newTab === activeTab) return;
+    setActiveTab(newTab);
+    setTabHistory((prev) => {
+      const filtered = prev.filter((t) => t !== newTab);
+      return [...filtered, newTab];
+    });
+  };
+
+  // Android hardware back button listener: navigate back through visited tabs history stack
+  useEffect(() => {
+    const backAction = () => {
+      if (tabHistory.length > 1) {
+        const updatedHistory = [...tabHistory];
+        updatedHistory.pop(); // Pop current active tab
+        const previousTab = updatedHistory[updatedHistory.length - 1];
+        setTabHistory(updatedHistory);
+        setActiveTab(previousTab);
+        return true; // Intercept & block default OS app minimization/exit
+      } else if (activeTab !== 'Home') {
+        setActiveTab('Home');
+        setTabHistory(['Home']);
+        return true; // Intercept & block default OS app minimization/exit
+      }
+      return false; // Exit app when on Home tab with no prior history
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, [tabHistory, activeTab]);
   const [categories, setCategories] = useState(FALLBACK_CATEGORIES);
   const [orders, setOrders] = useState([]);
   const [currentOrdersTab, setCurrentOrdersTab] = useState('Current'); // Current or Past (Mockup 14)
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [dynamicFeedSections, setDynamicFeedSections] = useState([]);
 
   // Coupon promo states
   const [couponInput, setCouponInput] = useState('');
@@ -171,8 +219,81 @@ export default function HomeScreen() {
   const [toastImage, setToastImage] = useState(null);
   const [toastIsFullImage, setToastIsFullImage] = useState(false);
   const [toastVisible, setToastVisible] = useState(false);
+  const [showNotificationModal, setShowNotificationModal] = useState(false);
+  const [serverNotifications, setServerNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loadingNotifications, setLoadingNotifications] = useState(false);
+  const [readNotificationIds, setReadNotificationIds] = useState([]);
   const slideAnim = useRef(new Animated.Value(-150)).current;
   const pan = useRef(new Animated.ValueXY()).current;
+
+  useEffect(() => {
+    const loadReadNotificationIds = async () => {
+      try {
+        const stored = await AsyncStorage.getItem('readNotificationIds');
+        if (stored) {
+          setReadNotificationIds(JSON.parse(stored));
+        }
+      } catch (err) {
+        console.log('Error loading read notification IDs:', err);
+      }
+    };
+    loadReadNotificationIds();
+  }, []);
+
+  const markNotificationsAsRead = async (idsToMark) => {
+    if (!idsToMark || idsToMark.length === 0) return;
+    try {
+      const updatedIds = Array.from(new Set([...readNotificationIds, ...idsToMark]));
+      setReadNotificationIds(updatedIds);
+      await AsyncStorage.setItem('readNotificationIds', JSON.stringify(updatedIds));
+
+      setServerNotifications(prev =>
+        prev.map(item => (idsToMark.includes(item.id) ? { ...item, read: true } : item))
+      );
+      setUnreadCount(prev => Math.max(0, prev - idsToMark.length));
+    } catch (err) {
+      console.log('Error saving read notification IDs:', err);
+    }
+  };
+
+  const fetchNotifications = async () => {
+    setLoadingNotifications(true);
+    try {
+      const res = await api.get('/customer/notifications');
+      if (res.data?.notifications) {
+        let storedIds = readNotificationIds;
+        try {
+          const stored = await AsyncStorage.getItem('readNotificationIds');
+          if (stored) storedIds = JSON.parse(stored);
+        } catch (e) { }
+
+        const processed = res.data.notifications.map(item => ({
+          ...item,
+          read: item.read || storedIds.includes(item.id)
+        }));
+
+        setServerNotifications(processed);
+        setUnreadCount(processed.filter(n => !n.read).length);
+      }
+    } catch (err) {
+      console.log('Error fetching notifications:', err.message);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  const formatTimeAgo = (dateString) => {
+    if (!dateString) return 'Just now';
+    const diffMs = Date.now() - new Date(dateString).getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
 
   // Banner Carousel States
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
@@ -207,10 +328,11 @@ export default function HomeScreen() {
     index
   });
 
-  // Swipe-to-dismiss gesture setup
+  // Swipe-to-dismiss gesture setup for Toast notification banner
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (evt, gestureState) => Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
       onPanResponderMove: (evt, gestureState) => {
         pan.setValue({ x: gestureState.dx, y: 0 });
       },
@@ -280,9 +402,9 @@ export default function HomeScreen() {
       const unsubscribe = messaging().onMessage(async remoteMessage => {
         console.log('📣 [FCM Foreground] Push received:', remoteMessage);
         if (remoteMessage.notification) {
-          const imageUrl = remoteMessage.notification.android?.imageUrl || 
-                           remoteMessage.notification.imageUrl || 
-                           remoteMessage.data?.imageUrl || null;
+          const imageUrl = remoteMessage.notification.android?.imageUrl ||
+            remoteMessage.notification.imageUrl ||
+            remoteMessage.data?.imageUrl || null;
           const isFullImage = remoteMessage.data?.isFullImage === 'true';
           triggerToast(
             remoteMessage.notification.title,
@@ -456,8 +578,9 @@ export default function HomeScreen() {
     }
   };
 
-  const fetchInitialData = async () => {
-    setLoading(true);
+  const fetchInitialData = async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
+    fetchNotifications();
 
     // Validate delivery zones and operational status
     try {
@@ -507,31 +630,61 @@ export default function HomeScreen() {
     }
 
     try {
-      const [prodRes, catRes] = await Promise.all([
+      const [prodRes, catRes, feedRes] = await Promise.all([
         api.get('/products'),
-        api.get('/categories')
+        api.get('/categories'),
+        api.get('/feed/layout')
       ]);
       if (prodRes.data.products?.length > 0) setProducts(prodRes.data.products);
       if (catRes.data.categories?.length > 0) setCategories(catRes.data.categories);
+      if (feedRes.data.sections?.length > 0) setDynamicFeedSections(feedRes.data.sections);
     } catch (err) {
       console.log('Error fetching store data, falling back to mock files:', err.message);
     } finally {
-      setLoading(false);
+      if (!isRefresh) setLoading(false);
     }
 
     // Register push notification token
     registerFCM();
   };
 
-  const fetchOrders = async () => {
-    setLoading(true);
+  const fetchOrders = async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
     try {
       const res = await api.get('/orders/my');
-      setOrders(res.data.orders || []);
+      const orderData = Array.isArray(res.data)
+        ? res.data
+        : (Array.isArray(res.data?.orders) ? res.data.orders : []);
+      setOrders(orderData);
     } catch (err) {
       console.log('Error fetching customer orders:', err.message);
+      try {
+        const fallbackRes = await api.get('/orders');
+        const fallbackData = Array.isArray(fallbackRes.data)
+          ? fallbackRes.data
+          : (Array.isArray(fallbackRes.data?.orders) ? fallbackRes.data.orders : []);
+        setOrders(fallbackData);
+      } catch (e) {
+        setOrders([]);
+      }
     } finally {
-      setLoading(false);
+      if (!isRefresh) setLoading(false);
+    }
+  };
+
+  // Pull-to-refresh action handler for home screen and tabs
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        fetchInitialData(true),
+        fetchNotifications(),
+        fetchOrders(true)
+      ]);
+    } catch (err) {
+      console.log('Error refreshing data:', err?.message || err);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -576,7 +729,22 @@ export default function HomeScreen() {
   // MOCKUP 05: HOME SCREEN TAB
   const renderHomeTab = () => {
     return (
-      <ScrollView showsVerticalScrollIndicator={false} className="flex-grow bg-white">
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        className="flex-1 bg-white"
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 60 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary, '#10b981', '#059669']}
+            tintColor={colors.primary}
+            title="Refreshing FreshMart..."
+            titleColor={colors.textMuted}
+            progressBackgroundColor="#ffffff"
+          />
+        }
+      >
         {/* Header (Mockup 05) */}
         <View className="px-5 pt-4 pb-2 flex-row items-center justify-between">
           <View className="flex-row items-center gap-2">
@@ -589,11 +757,20 @@ export default function HomeScreen() {
               <Text style={{ color: colors.textMain }} className="text-xs font-black">{coords.addressText}</Text>
             </View>
           </View>
-          <TouchableOpacity className="p-2.5 bg-slate-100 rounded-full relative">
+          <TouchableOpacity
+            onPress={() => {
+              fetchNotifications();
+              setShowNotificationModal(true);
+            }}
+            activeOpacity={0.7}
+            className="p-2.5 bg-slate-100 rounded-full relative"
+          >
             <Bell size={24} color={colors.textMain} />
-            <View className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full items-center justify-center border-2 border-white">
-              <Text className="text-[9px] text-white font-extrabold">2</Text>
-            </View>
+            {unreadCount > 0 && (
+              <View className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full items-center justify-center border-2 border-white shadow-sm">
+                <Text className="text-[9px] text-white font-black">{unreadCount > 9 ? '9+' : unreadCount}</Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -620,222 +797,212 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Premium Auto-Playing Banner Carousel Slider */}
-        <View className="py-2.5 relative">
-          <FlatList
-            ref={bannerRef}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            data={CAMPAIGN_BANNERS}
-            keyExtractor={(item) => item.id}
-            getItemLayout={getItemLayout}
-            onScroll={handleBannerScroll}
-            snapToInterval={Dimensions.get('window').width - 30}
-            decelerationRate="fast"
-            snapToAlignment="start"
-            contentContainerStyle={{ paddingHorizontal: 20 }}
-            renderItem={({ item }) => {
-              const cardWidth = Dimensions.get('window').width - 40;
-              return (
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() => {
-                    const match = categories.find(c => c.name.toLowerCase() === item.targetCategoryName.toLowerCase());
-                    if (match) {
-                      navigation.navigate('ProductListing', { categoryId: match._id, categoryName: match.name });
-                    } else {
-                      setActiveTab('Categories');
-                    }
-                  }}
-                  style={{
-                    width: cardWidth,
-                    backgroundColor: item.color,
-                    marginRight: 10
-                  }}
-                  className="rounded-3xl relative overflow-hidden shadow-lg h-36"
-                >
-                  {item.isFullImage ? (
-                    // Render custom designed graphic image covering the whole card
-                    <Image
-                      source={item.image}
-                      className="w-full h-full"
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    // Render dynamic template layout card
-                    <View className="flex-1 p-5 flex-row justify-between items-center">
-                      <View className="z-10 max-w-[62%] space-y-1">
-                        <View className="bg-white/20 border border-white/30 rounded-full px-2.5 py-0.5 self-start">
-                          <Text className="text-[9px] font-extrabold text-white uppercase tracking-wider">
-                            {item.subtitle}
-                          </Text>
-                        </View>
-                        <Text className="text-base font-black text-white leading-tight">
-                          {item.title}
-                        </Text>
-                        <View className="bg-white rounded-full px-3.5 py-1.5 self-start mt-2">
-                          <Text style={{ color: item.color }} className="text-[9px] font-black">
-                            {item.buttonText}
-                          </Text>
-                        </View>
-                      </View>
-                      <Image
-                        source={item.image}
-                        className="w-24 h-24 rounded-2xl absolute right-3 bottom-3"
-                        resizeMode="contain"
-                      />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            }}
-          />
-
-          {/* Pagination Indicators */}
-          <View className="flex-row justify-center items-center mt-3 gap-1.5">
-            {CAMPAIGN_BANNERS.map((_, index) => (
-              <View
-                key={index}
-                style={{
-                  backgroundColor: currentBannerIndex === index ? colors.primary : '#cbd5e1',
-                  width: currentBannerIndex === index ? 16 : 6,
-                  height: 6,
-                  borderRadius: 3
-                }}
-                className="transition-all duration-300"
+        {/* Dynamic SDUI Feed Sections or Fallback Static Feed */}
+        {dynamicFeedSections && dynamicFeedSections.length > 0 ? (
+          <View className="pb-8">
+            {dynamicFeedSections.map((sec, idx) => (
+              <DynamicFeedSection
+                key={sec._id || `sec-${idx}`}
+                section={sec}
+                navigation={navigation}
+                cart={cart}
+                addToCart={addToCart}
+                removeFromCart={removeFromCart}
+                colors={colors}
               />
             ))}
           </View>
-        </View>
-
-        {/* Categories Circle horizontal list (Mockup 05) */}
-        <View className="py-4">
-          <View className="px-5 flex-row items-center justify-between mb-3">
-            <Text style={{ color: colors.textMain }} className="text-base font-extrabold">Shop by Category</Text>
-            <TouchableOpacity onPress={() => setActiveTab('Categories')}>
-              <Text style={{ color: colors.primary }} className="text-xs font-extrabold">See All</Text>
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            data={categories.slice(0, 10)}
-            keyExtractor={(item) => item._id}
-            contentContainerStyle={{ paddingHorizontal: 15 }}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                onPress={() => navigation.navigate('ProductListing', { categoryId: item._id, categoryName: item.name })}
-                className="items-center mr-6"
-              >
-                <View
-                  style={{ backgroundColor: '#f3f4f6' }}
-                  className="w-16 h-16 rounded-2xl items-center justify-center mb-1.5 shadow-sm overflow-hidden"
-                >
-                  <Image source={{ uri: item.image }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                </View>
-                <Text style={{ color: colors.textMain }} className="text-[10px] font-black tracking-tight text-center mt-1.5">{item.name}</Text>
-              </TouchableOpacity>
-            )}
-          />
-        </View>
-
-        {/* Products Grid layout cards (Mockup 05) */}
-        <View className="px-5 pb-8">
-          <View className="flex-row items-center justify-between mb-4">
-            <Text style={{ color: colors.textMain }} className="text-base font-extrabold">Today's Deals</Text>
-            <TouchableOpacity>
-              <Text style={{ color: colors.primary }} className="text-xs font-extrabold">See All</Text>
-            </TouchableOpacity>
-          </View>
-
-          {loading ? (
-            <ActivityIndicator color={colors.primary} className="my-8" />
-          ) : filteredProducts.length === 0 ? (
-            <Text style={{ color: colors.textMuted }} className="text-center text-xs py-8">No products found.</Text>
-          ) : (
-            <View className="flex-row flex-wrap justify-between">
-              {filteredProducts.map((product) => {
-                const cartItem = cart.find(c => c.product._id === product._id);
-                return (
-                  <View
-                    key={product._id}
-                    style={{ width: (width - 56) / 3, borderColor: colors.border, backgroundColor: colors.card }}
-                    className="border rounded-2xl mb-4 shadow-sm relative overflow-hidden"
-                  >
-                    {/* Discount badge */}
-                    <View className="absolute top-2 left-2 bg-red-500 rounded px-1.5 py-0.5 z-10">
-                      <Text className="text-[7px] text-white font-extrabold">20% OFF</Text>
-                    </View>
-
+        ) : (
+          <>
+            {/* Premium Auto-Playing Banner Carousel Slider */}
+            <View className="py-2.5 relative">
+              <FlatList
+                ref={bannerRef}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                data={CAMPAIGN_BANNERS}
+                keyExtractor={(item) => item.id}
+                getItemLayout={getItemLayout}
+                onScroll={handleBannerScroll}
+                snapToInterval={Dimensions.get('window').width - 30}
+                decelerationRate="fast"
+                snapToAlignment="start"
+                contentContainerStyle={{ paddingHorizontal: 20 }}
+                renderItem={({ item }) => {
+                  const cardWidth = Dimensions.get('window').width - 40;
+                  const cardHeight = Math.round(cardWidth * 0.5); // 2:1 Aspect Ratio (matches 1200x600 recommended size)
+                  return (
                     <TouchableOpacity
-                      onPress={() => navigation.navigate('ProductDetails', { product })}
-                      className="w-full bg-white items-center justify-center pt-2 pb-1"
+                      activeOpacity={0.9}
+                      onPress={() => {
+                        const match = categories.find(c => c.name.toLowerCase() === item.targetCategoryName.toLowerCase());
+                        if (match) {
+                          navigation.navigate('ProductListing', { categoryId: match._id, categoryName: match.name });
+                        } else {
+                          handleTabSwitch('Categories');
+                        }
+                      }}
+                      style={{
+                        width: cardWidth,
+                        height: cardHeight,
+                        backgroundColor: item.color,
+                        marginRight: 10
+                      }}
+                      className="rounded-2xl relative overflow-hidden shadow-lg"
                     >
-                      <Image
-                        source={{ uri: product.image }}
-                        style={{ width: '100%', height: 75 }}
-                        resizeMode="contain"
-                      />
-                    </TouchableOpacity>
-
-                    {/* Text Details Container */}
-                    <View className="p-2 pt-1 flex-1 justify-between bg-white">
-                      <View>
-                        <Text style={{ color: colors.textMain }} className="text-[10px] font-black leading-tight" numberOfLines={1}>
-                          {product.name}
-                        </Text>
-                        <Text style={{ color: colors.textMuted }} className="text-[8px] font-bold mt-0.5">
-                          {product.unit || '1 kg'}
-                        </Text>
-                      </View>
-
-                      <View className="flex-row items-center justify-between mt-2.5">
-                        <View className="flex-1 mr-0.5">
-                          <Text style={{ color: colors.textMain }} className="text-[10px] font-black">
-                            ₹{product.price}
-                          </Text>
-                          <Text style={{ color: colors.textMuted }} className="text-[8px] font-medium line-through">
-                            ₹{Math.floor(product.price * 1.25)}
-                          </Text>
-                        </View>
-
-                        {cartItem ? (
-                          <View style={{ backgroundColor: colors.primary }} className="flex-row items-center rounded-xl px-2 h-10 justify-center">
-                            <TouchableOpacity
-                              onPress={() => removeFromCart(product._id)}
-                              className="p-1"
-                              hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
-                            >
-                              <Minus size={13} color="white" className="stroke-[3]" />
-                            </TouchableOpacity>
-                            <Text className="text-white text-xs font-black px-1.5">{cartItem.quantity}</Text>
-                            <TouchableOpacity
-                              onPress={() => addToCart(product)}
-                              className="p-1"
-                              hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
-                            >
-                              <Plus size={13} color="white" className="stroke-[3]" />
-                            </TouchableOpacity>
+                      {item.isFullImage ? (
+                        // Render custom designed graphic image covering the whole card
+                        <Image
+                          source={item.image}
+                          style={{ width: '100%', height: '100%' }}
+                          className="w-full h-full"
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        // Render dynamic template layout card
+                        <View className="flex-1 p-5 flex-row justify-between items-center">
+                          <View className="z-10 max-w-[62%] space-y-1">
+                            <View className="bg-white/20 border border-white/30 rounded-full px-2.5 py-0.5 self-start">
+                              <Text className="text-[9px] font-extrabold text-white uppercase tracking-wider">
+                                {item.subtitle}
+                              </Text>
+                            </View>
+                            <Text className="text-base font-black text-white leading-tight">
+                              {item.title}
+                            </Text>
+                            <View className="bg-white rounded-full px-3.5 py-1.5 self-start mt-2">
+                              <Text style={{ color: item.color }} className="text-[9px] font-black">
+                                {item.buttonText}
+                              </Text>
+                            </View>
                           </View>
-                        ) : (
-                          <TouchableOpacity
-                            onPress={() => addToCart(product)}
-                            style={{ backgroundColor: colors.primary }}
-                            className="w-10 h-10 rounded-xl items-center justify-center shadow-sm"
-                            hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
-                          >
-                            <Plus size={20} color="white" className="stroke-[3.5]" />
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  </View>
-                );
-              })}
+                          <Image
+                            source={item.image}
+                            className="w-24 h-24 rounded-2xl absolute right-3 bottom-3"
+                            resizeMode="contain"
+                          />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+
+              {/* Pagination Indicators */}
+              <View className="flex-row justify-center items-center mt-3 gap-1.5">
+                {CAMPAIGN_BANNERS.map((_, index) => (
+                  <View
+                    key={index}
+                    style={{
+                      backgroundColor: currentBannerIndex === index ? colors.primary : '#cbd5e1',
+                      width: currentBannerIndex === index ? 16 : 6,
+                      height: 6,
+                      borderRadius: 3
+                    }}
+                    className="transition-all duration-300"
+                  />
+                ))}
+              </View>
             </View>
-          )}
-        </View>
+
+            {/* Multi-Row Big Category Grid Showcase */}
+            <View className="py-4">
+              <View className="px-5 flex-row items-center justify-between mb-3.5">
+                <View>
+                  <Text style={{ color: colors.textMain }} className="text-base font-black tracking-tight">
+                    Shop by Category
+                  </Text>
+                  <Text style={{ color: colors.textMuted }} className="text-[10px] font-bold mt-0.5">
+                    Explore {categories.length || 8}+ Fresh Departments
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setActiveTab('Categories')}
+                  style={{ backgroundColor: colors.primaryLight, borderColor: colors.primary + '30' }}
+                  className="flex-row items-center gap-1 px-3 py-1.5 rounded-full border"
+                >
+                  <Text style={{ color: colors.primary }} className="text-xs font-black">
+                    See All
+                  </Text>
+                  <ChevronRight size={14} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+
+              {/* 4-Column Clean Category Grid with Cover Image & Text Below */}
+              <View className="px-4 flex-row flex-wrap justify-between">
+                {categories.slice(0, 8).map((item, idx) => {
+                  const catCardWidth = (width - 32 - 24) / 4;
+
+                  return (
+                    <TouchableOpacity
+                      key={item._id || `cat-${idx}`}
+                      onPress={() => navigation.navigate('ProductListing', { categoryId: item._id, categoryName: item.name })}
+                      style={{ width: catCardWidth }}
+                      className="mb-4 items-center"
+                      activeOpacity={0.85}
+                    >
+                      {/* Rounded Cover Image Box (No Border) */}
+                      <View
+                        style={{ width: catCardWidth, height: Math.round(catCardWidth * 0.9) }}
+                        className="rounded-2xl overflow-hidden bg-slate-100"
+                      >
+                        <Image
+                          source={{ uri: item.image }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="cover"
+                        />
+                      </View>
+
+                      {/* Category Name Directly Below Image */}
+                      <Text
+                        style={{ color: colors.textMain }}
+                        className="text-[11px] font-bold text-center tracking-tight leading-tight mt-1.5 px-0.5"
+                        numberOfLines={2}
+                      >
+                        {item.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Products Grid layout cards (Mockup 05) */}
+            <View className="px-5 pb-8">
+              <View className="flex-row items-center justify-between mb-4">
+                <Text style={{ color: colors.textMain }} className="text-base font-extrabold">Today's Deals</Text>
+                <TouchableOpacity>
+                  <Text style={{ color: colors.primary }} className="text-xs font-extrabold">See All</Text>
+                </TouchableOpacity>
+              </View>
+
+              {loading ? (
+                <ActivityIndicator color={colors.primary} className="my-8" />
+              ) : filteredProducts.length === 0 ? (
+                <Text style={{ color: colors.textMuted }} className="text-center text-xs py-8">No products found.</Text>
+              ) : (
+                <View className="flex-row flex-wrap justify-between">
+                  {filteredProducts.map((product) => {
+                    const cartItem = cart.find(c => c.product._id === product._id);
+
+                    return (
+                      <ProductCard
+                        key={product._id}
+                        product={product}
+                        cartItem={cartItem}
+                        cardWidth={(width - 40 - 16) / 3}
+                        onPress={() => navigation.navigate('ProductDetails', { product })}
+                        onAddToCart={() => addToCart(product)}
+                        onRemoveFromCart={() => removeFromCart(product._id)}
+                        colors={colors}
+                      />
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          </>
+        )}
       </ScrollView>
     );
   };
@@ -939,7 +1106,20 @@ export default function HomeScreen() {
         {loading ? (
           <ActivityIndicator color={colors.primary} className="my-8" />
         ) : (
-          <ScrollView showsVerticalScrollIndicator={false} className="flex-1">
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            className="flex-1"
+            contentContainerStyle={{ paddingBottom: 60 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[colors.primary, '#10b981']}
+                tintColor={colors.primary}
+                progressBackgroundColor="#ffffff"
+              />
+            }
+          >
             {/* Group 1: Grocery & Kitchen */}
             <Text style={{ color: colors.textMain }} className="text-base font-black mb-3 mt-1">Grocery & Kitchen</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
@@ -1034,409 +1214,452 @@ export default function HomeScreen() {
   // MOCKUP 09: MY CART BASKET VIEW
   const renderCartTab = () => {
     return (
-      <View className="flex-1 px-5 pt-4 bg-white">
-        <View className="flex-row items-center justify-between mb-4">
-          <Text style={{ color: colors.textMain }} className="text-lg font-black">My Cart ({cart.length})</Text>
-          <TouchableOpacity>
-            <Text style={{ color: colors.primary }} className="text-sm font-extrabold">Edit</Text>
-          </TouchableOpacity>
-        </View>
-
-        {cart.length === 0 ? (
-          <View className="flex-1 items-center justify-center pb-20">
-            <Image
-              source={require("../assets/ecom_assets/empty_cart.png")}
-              className="w-48 h-48 mb-4"
-              resizeMode="contain"
-            />
-            <Text style={{ color: colors.textMain }} className="text-base font-black">Your cart is empty</Text>
-            <Text style={{ color: colors.textMuted }} className="text-xs text-center mt-1 px-8 font-medium">Looks like you haven't added anything yet.</Text>
-            <TouchableOpacity
-              onPress={() => setActiveTab('Home')}
-              style={{ backgroundColor: colors.primary }}
-              className="mt-6 rounded-2xl px-6 py-3 shadow-md animate-bounce"
-            >
-              <Text className="text-white font-black text-xs">Start Shopping</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View className="flex-grow justify-between">
-            <ScrollView showsVerticalScrollIndicator={false} className="flex-shrink">
-              {cart.map((item) => (
-                <View
-                  key={item.product._id}
-                  style={{ borderBottomColor: colors.border }}
-                  className="flex-row items-center justify-between border-b py-3.5"
-                >
-                  <View className="flex-row items-center gap-3 flex-1 mr-4">
-                    <Image source={{ uri: item.product.image }} className="w-12 h-12 rounded-xl bg-slate-50 border border-slate-100" resizeMode="contain" />
-                    <View className="flex-1">
-                      <Text style={{ color: colors.textMain }} className="text-xs font-black leading-tight">{item.product.name}</Text>
-                      <Text style={{ color: colors.textMuted }} className="text-[10px] mt-0.5 font-bold">₹{item.product.price} • {item.product.unit || '1 kg'}</Text>
-                    </View>
-                  </View>
-
-                  <View style={{ backgroundColor: colors.primary }} className="flex-row items-center rounded-2xl px-3.5 py-2 shadow-sm">
-                    <TouchableOpacity
-                      onPress={() => removeFromCart(item.product._id)}
-                      className="p-1.5"
-                      hitSlop={{ top: 15, bottom: 15, left: 12, right: 12 }}
-                    >
-                      <Minus size={15} color="white" className="stroke-[3]" />
-                    </TouchableOpacity>
-                    <Text className="text-white text-sm font-black px-4">{item.quantity}</Text>
-                    <TouchableOpacity
-                      onPress={() => addToCart(item.product)}
-                      className="p-1.5"
-                      hitSlop={{ top: 15, bottom: 15, left: 12, right: 12 }}
-                    >
-                      <Plus size={15} color="white" className="stroke-[3]" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))}
-
-              {/* Coupon row matching Screen 09 */}
-              <View>
-                <View
-                  style={{ borderColor: colors.border, backgroundColor: colors.card }}
-                  className="border-2 rounded-2xl p-2.5 mt-6 flex-row items-center justify-between"
-                >
-                  <View className="flex-1 mr-2">
-                    <TextInput
-                      placeholder="Apply Coupon"
-                      placeholderTextColor="#94a3b8"
-                      value={couponInput}
-                      onChangeText={(val) => {
-                        setCouponInput(val);
-                        setCouponError('');
-                      }}
-                      autoCapitalize="characters"
-                      className="p-1.5 text-xs font-bold text-slate-800 ml-1"
-                      editable={!appliedCoupon}
-                    />
-                  </View>
-                  {appliedCoupon ? (
-                    <TouchableOpacity
-                      onPress={handleRemoveCoupon}
-                      style={{ paddingVertical: 10, paddingHorizontal: 16 }}
-                      className="bg-red-500/10 rounded-xl border border-red-500/25"
-                      hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
-                    >
-                      <Text className="text-red-500 text-xs font-black">Remove</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      onPress={handleApplyCoupon}
-                      style={{ paddingVertical: 10, paddingHorizontal: 16 }}
-                      className="bg-emerald-500/10 rounded-xl border border-emerald-500/25"
-                      hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
-                    >
-                      <Text style={{ color: colors.primary }} className="text-xs font-black">Apply</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-                {couponError ? (
-                  <Text className="text-red-500 text-[10px] font-bold mt-1.5 ml-1">{couponError}</Text>
-                ) : null}
-                {couponSuccess ? (
-                  <Text className="text-emerald-600 text-[10px] font-bold mt-1.5 ml-1">{couponSuccess}</Text>
-                ) : null}
-              </View>
-
-              {/* Delivery Address panel inside Cart */}
-              <TouchableOpacity
-                onPress={() => navigation.navigate('Address')}
-                style={{ borderColor: colors.border, backgroundColor: colors.card }}
-                className="border-2 rounded-2xl p-4 mt-4 flex-row items-center justify-between"
-              >
-                <View className="flex-row items-center gap-3 flex-1">
-                  <MapPin size={20} color={colors.primary} />
-                  <View className="flex-1">
-                    <Text style={{ color: colors.textMain }} className="text-xs font-black">Home Address</Text>
-                    <Text style={{ color: colors.textMuted }} className="text-[10px] mt-0.5 font-semibold" numberOfLines={1}>
-                      Anna Nagar, Chennai - 600040
-                    </Text>
-                  </View>
-                </View>
-                <ChevronRight size={16} color={colors.textMuted} />
-              </TouchableOpacity>
-
-              {/* Bill summary (Mockup 09) */}
-              <View
-                style={{ backgroundColor: colors.card, borderColor: colors.border }}
-                className="rounded-2xl p-4 mt-4 border-2 space-y-2.5 mb-6"
-              >
-                <Text style={{ color: colors.textMain }} className="text-xs font-black mb-1">Billing Summary</Text>
-                <View className="flex-row justify-between">
-                  <Text style={{ color: colors.textMuted }} className="text-xs font-semibold">Subtotal</Text>
-                  <Text style={{ color: colors.textMain }} className="text-xs font-black">₹{getCartTotal()}</Text>
-                </View>
-                <View className="flex-row justify-between">
-                  <Text style={{ color: colors.textMuted }} className="text-xs font-semibold">Delivery Fee</Text>
-                  <Text style={{ color: colors.textMain }} className="text-xs font-black">₹{appliedCoupon?.code === 'FREESHIP' ? 0 : 15}</Text>
-                </View>
-                {appliedCoupon ? (
-                  <View className="flex-row justify-between">
-                    <Text className="text-emerald-600 text-xs font-semibold">Discount ({appliedCoupon.code})</Text>
-                    <Text className="text-emerald-600 text-xs font-black">-₹{getCouponDiscount()}</Text>
-                  </View>
-                ) : null}
-                <View style={{ backgroundColor: colors.border }} className="w-full h-px my-1" />
-                <View className="flex-row justify-between">
-                  <Text style={{ color: colors.textMain }} className="text-xs font-black">Total to Pay</Text>
-                  <Text style={{ color: colors.primary }} className="text-sm font-black">
-                    ₹{Math.max(0, getCartTotal() + (appliedCoupon?.code === 'FREESHIP' ? 0 : 15) - getCouponDiscount())}
-                  </Text>
-                </View>
-              </View>
-            </ScrollView>
-
-            {/* Checkout Button */}
-            <View className="py-4">
-              <TouchableOpacity
-                onPress={() => navigation.navigate('Checkout', {
-                  coords,
-                  appliedCoupon: appliedCoupon ? appliedCoupon.code : null
-                })}
-                style={{ backgroundColor: colors.primary }}
-                className="rounded-2xl py-4 items-center shadow-md shadow-emerald-700/25"
-              >
-                <Text className="text-white font-extrabold text-sm">Checkout</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-      </View>
+      <CartScreen
+        embedded={true}
+        onNavigateHome={() => handleTabSwitch('Home')}
+        navigation={navigation}
+        route={route}
+      />
     );
   };
 
   // MOCKUP 14: ORDERS TRACKING TABS LIST
   const renderOrdersTab = () => {
-    const currentOrders = orders.filter(o => o.orderStatus !== 'DELIVERED' && o.orderStatus !== 'CANCELLED');
-    const pastOrders = orders.filter(o => o.orderStatus === 'DELIVERED' || o.orderStatus === 'CANCELLED');
+    const safeOrders = Array.isArray(orders) ? orders : [];
+    const currentOrders = safeOrders.filter(o => o && o.orderStatus !== 'DELIVERED' && o.orderStatus !== 'CANCELLED');
+    const pastOrders = safeOrders.filter(o => o && (o.orderStatus === 'DELIVERED' || o.orderStatus === 'CANCELLED'));
     const listToRender = currentOrdersTab === 'Current' ? currentOrders : pastOrders;
 
-    return (
-      <View className="flex-1 px-5 pt-4 bg-white">
-        <Text style={{ color: colors.textMain }} className="text-lg font-black mb-4">My Orders</Text>
+    const getStatusStyle = (status) => {
+      switch (status) {
+        case 'PLACED':
+          return { bg: '#eff6ff', text: '#2563eb', border: '#bfdbfe', label: '📦 Order Placed' };
+        case 'CONFIRMED':
+        case 'PREPARING':
+          return { bg: '#fffbeb', text: '#d97706', border: '#fde68a', label: '👨‍🍳 Preparing' };
+        case 'OUT_FOR_DELIVERY':
+          return { bg: '#ecfdf5', text: '#059669', border: '#a7f3d0', label: '🛵 Out for Delivery' };
+        case 'DELIVERED':
+          return { bg: '#f0fdf4', text: '#16a34a', border: '#bbf7d0', label: '✅ Delivered' };
+        case 'CANCELLED':
+          return { bg: '#fef2f2', text: '#dc2626', border: '#fecaca', label: '✕ Cancelled' };
+        default:
+          return { bg: '#f8fafc', text: '#475569', border: '#e2e8f0', label: status || 'Order Placed' };
+      }
+    };
 
-        {/* Tab Header Selector (Mockup 14) */}
-        <View className="flex-row bg-slate-100 rounded-xl p-1 mb-5">
+    return (
+      <View className="flex-1 px-5 pt-4 bg-slate-50/50">
+        {/* Top Header Bar */}
+        <View className="flex-row items-center justify-between mb-4">
+          <View>
+            <Text style={{ color: colors.textMain }} className="text-xl font-black tracking-tight">
+              My Orders
+            </Text>
+            <Text style={{ color: colors.textMuted }} className="text-xs font-semibold mt-0.5">
+              {safeOrders.length} total orders placed
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={fetchOrders}
+            className="p-2.5 bg-white rounded-2xl border border-slate-200 shadow-sm flex-row items-center gap-1.5"
+          >
+            <Clock size={16} color={colors.primary} />
+            <Text style={{ color: colors.primary }} className="text-xs font-black">Refresh</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Tab Header Selector */}
+        <View className="flex-row bg-slate-200/70 p-1.5 rounded-2xl mb-5 border border-slate-200">
           <TouchableOpacity
             onPress={() => setCurrentOrdersTab('Current')}
-            style={{ backgroundColor: currentOrdersTab === 'Current' ? 'white' : 'transparent' }}
-            className="flex-1 py-2 rounded-lg items-center shadow-sm"
+            style={{
+              backgroundColor: currentOrdersTab === 'Current' ? colors.primary : 'transparent',
+            }}
+            className="flex-1 py-2.5 rounded-xl items-center flex-row justify-center gap-2 shadow-sm"
           >
             <Text
-              style={{ color: currentOrdersTab === 'Current' ? colors.primary : colors.textMuted }}
+              style={{ color: currentOrdersTab === 'Current' ? '#ffffff' : colors.textMuted }}
               className="text-xs font-black"
             >
-              Current Orders
+              Active Orders
             </Text>
+            {currentOrders.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: currentOrdersTab === 'Current' ? '#ffffff' : colors.primary,
+                }}
+                className="px-2 py-0.5 rounded-full"
+              >
+                <Text
+                  style={{ color: currentOrdersTab === 'Current' ? colors.primary : '#ffffff' }}
+                  className="text-[9px] font-black"
+                >
+                  {currentOrders.length}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
+
           <TouchableOpacity
             onPress={() => setCurrentOrdersTab('Past')}
-            style={{ backgroundColor: currentOrdersTab === 'Past' ? 'white' : 'transparent' }}
-            className="flex-1 py-2 rounded-lg items-center shadow-sm"
+            style={{
+              backgroundColor: currentOrdersTab === 'Past' ? colors.primary : 'transparent',
+            }}
+            className="flex-1 py-2.5 rounded-xl items-center flex-row justify-center gap-2 shadow-sm"
           >
             <Text
-              style={{ color: currentOrdersTab === 'Past' ? colors.primary : colors.textMuted }}
+              style={{ color: currentOrdersTab === 'Past' ? '#ffffff' : colors.textMuted }}
               className="text-xs font-black"
             >
               Past Orders
             </Text>
+            {pastOrders.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: currentOrdersTab === 'Past' ? '#ffffff' : '#94a3b8',
+                }}
+                className="px-2 py-0.5 rounded-full"
+              >
+                <Text
+                  style={{ color: currentOrdersTab === 'Past' ? colors.primary : '#ffffff' }}
+                  className="text-[9px] font-black"
+                >
+                  {pastOrders.length}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
 
         {loading ? (
-          <ActivityIndicator color={colors.primary} className="my-8" />
+          <ActivityIndicator color={colors.primary} size="large" className="my-12" />
         ) : listToRender.length === 0 ? (
-          <View className="flex-1 items-center justify-center pb-20">
-            <Image
-              source={require("../assets/ecom_assets/no_orders.png")}
-              className="w-48 h-48 mb-4"
-              resizeMode="contain"
-            />
-            <Text style={{ color: colors.textMain }} className="text-base font-black">No orders yet</Text>
-            <Text style={{ color: colors.textMuted }} className="text-xs mt-1 text-center font-semibold">You haven't placed any orders anything yet.</Text>
-            <TouchableOpacity
-              onPress={() => setActiveTab('Home')}
-              style={{ backgroundColor: colors.primary }}
-              className="mt-6 rounded-2xl px-6 py-3 shadow-md"
-            >
-              <Text className="text-white font-black text-xs">Start Shopping</Text>
-            </TouchableOpacity>
-          </View>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ flexGrow: 1 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={fetchOrders}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+                progressBackgroundColor="#ffffff"
+              />
+            }
+          >
+            <View className="flex-1 items-center justify-center pb-20 px-6">
+              <View className="w-40 h-40 bg-emerald-50 rounded-full items-center justify-center mb-4 border border-emerald-100 shadow-sm">
+                <Image
+                  source={require("../assets/ecom_assets/no_orders.png")}
+                  className="w-32 h-32"
+                  resizeMode="contain"
+                />
+              </View>
+              <Text style={{ color: colors.textMain }} className="text-lg font-black text-center">
+                No {currentOrdersTab.toLowerCase()} orders
+              </Text>
+              <Text style={{ color: colors.textMuted }} className="text-xs mt-1.5 text-center font-medium leading-relaxed px-4">
+                {currentOrdersTab === 'Current'
+                  ? "You don't have any active deliveries right now. Fresh groceries dispatched in 10 mins!"
+                  : "No past order history found. Start exploring our fresh products catalog."}
+              </Text>
+              <TouchableOpacity
+                onPress={() => handleTabSwitch('Home')}
+                style={{ backgroundColor: colors.primary }}
+                className="mt-6 rounded-2xl px-8 py-3.5 shadow-lg shadow-emerald-700/20"
+              >
+                <Text className="text-white font-extrabold text-xs tracking-wide">
+                  Start Shopping 🛒
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         ) : (
           <FlatList
             data={listToRender}
-            keyExtractor={(item) => item._id}
+            keyExtractor={(item, idx) => (item?._id ? String(item._id) : `order-${idx}`)}
             showsVerticalScrollIndicator={false}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                onPress={() => navigation.navigate('Tracking', { orderId: item._id })}
-                style={{ borderColor: colors.border, backgroundColor: colors.card }}
-                className="border-2 rounded-2xl p-4 mb-4 shadow-sm"
-              >
-                <View className="flex-row items-center justify-between border-b border-slate-100 pb-2 mb-3">
-                  <View>
-                    <Text style={{ color: colors.textMain }} className="text-xs font-black">{item.orderNumber}</Text>
-                    <Text style={{ color: colors.textMuted }} className="text-[9px] font-bold mt-0.5">
-                      Today, {new Date(item.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  </View>
+            contentContainerStyle={{ paddingBottom: 24 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={fetchOrders}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+                progressBackgroundColor="#ffffff"
+              />
+            }
+            renderItem={({ item, index }) => {
+              if (!item) return null;
+              const statusStyle = getStatusStyle(item.orderStatus);
+              const rawId = item._id ? String(item._id) : (item.id ? String(item.id) : `ORD-${index}`);
+              const orderNum = item.orderNumber || (rawId.length >= 6 ? rawId.slice(-6).toUpperCase() : rawId);
 
-                  <View
-                    style={{
-                      backgroundColor: item.orderStatus === 'DELIVERED' ? colors.primaryLight : '#fef3c7',
-                      borderColor: item.orderStatus === 'DELIVERED' ? colors.primary + '20' : '#f59e0b20'
-                    }}
-                    className="border px-2.5 py-0.5 rounded-full"
-                  >
-                    <Text
-                      style={{ color: item.orderStatus === 'DELIVERED' ? colors.primary : '#d97706' }}
-                      className="text-[9px] font-extrabold uppercase"
+              let formattedDate = 'Recently';
+              if (item.createdAt) {
+                try {
+                  const d = new Date(item.createdAt);
+                  if (!isNaN(d.getTime())) {
+                    formattedDate = d.toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    });
+                  }
+                } catch (e) { }
+              }
+
+              return (
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('Tracking', { orderId: item._id || rawId })}
+                  activeOpacity={0.9}
+                  style={{ borderColor: colors.border }}
+                  className="bg-white border rounded-3xl p-4 mb-4 shadow-sm relative overflow-hidden"
+                >
+                  {/* Top Row: Order ID & Status Badge */}
+                  <View className="flex-row items-center justify-between border-b border-slate-100 pb-3 mb-3">
+                    <View className="flex-row items-center gap-2.5">
+                      <View className="w-9 h-9 rounded-xl bg-emerald-50 items-center justify-center border border-emerald-100">
+                        <ShoppingBag size={18} color={colors.primary} />
+                      </View>
+                      <View>
+                        <Text style={{ color: colors.textMain }} className="text-xs font-black tracking-tight">
+                          #{orderNum}
+                        </Text>
+                        <Text style={{ color: colors.textMuted }} className="text-[10px] font-semibold mt-0.5">
+                          {formattedDate}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View
+                      style={{
+                        backgroundColor: statusStyle.bg,
+                        borderColor: statusStyle.border
+                      }}
+                      className="border px-3 py-1 rounded-full shadow-2xs"
                     >
-                      {item.orderStatus}
-                    </Text>
-                  </View>
-                </View>
-
-                <View className="flex-row items-center justify-between">
-                  <View>
-                    <Text style={{ color: colors.textMain }} className="text-sm font-black">₹{item.finalTotal}</Text>
-                    <Text style={{ color: colors.textMuted }} className="text-[10px] font-semibold mt-0.5">{item.items?.length} Items</Text>
+                      <Text
+                        style={{ color: statusStyle.text }}
+                        className="text-[10px] font-black uppercase tracking-wider"
+                      >
+                        {statusStyle.label}
+                      </Text>
+                    </View>
                   </View>
 
-                  <View className="flex-row items-center gap-1">
-                    <Text style={{ color: colors.primary }} className="text-xs font-black">Track Order</Text>
-                    <ChevronRight size={14} color={colors.primary} />
+                  {/* Items Preview Row */}
+                  <View className="bg-slate-50/70 rounded-2xl p-3 mb-3 flex-row items-center justify-between">
+                    <View className="flex-1 mr-3">
+                      <Text style={{ color: colors.textMain }} className="text-xs font-bold" numberOfLines={1}>
+                        {item.items?.map(i => `${i.name || i.product?.name || 'Item'} (${i.quantity})`).join(', ')}
+                      </Text>
+                      <Text style={{ color: colors.textMuted }} className="text-[10px] font-semibold mt-0.5">
+                        {item.items?.length || 1} item{item.items?.length > 1 ? 's' : ''} in package
+                      </Text>
+                    </View>
+
+                    <View className="bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                      <Text style={{ color: colors.textMain }} className="text-[10px] font-black">
+                        COD
+                      </Text>
+                    </View>
                   </View>
-                </View>
-              </TouchableOpacity>
-            )}
+
+                  {/* Card Bottom: Total Amount & Action Button */}
+                  <View className="flex-row items-center justify-between pt-1">
+                    <View>
+                      <Text style={{ color: colors.textMuted }} className="text-[10px] font-bold">Total Amount</Text>
+                      <Text style={{ color: colors.textMain }} className="text-base font-black">
+                        ₹{item.finalTotal || item.totalAmount || 0}
+                      </Text>
+                    </View>
+
+                    {item.orderStatus !== 'DELIVERED' && item.orderStatus !== 'CANCELLED' ? (
+                      <View
+                        style={{ backgroundColor: colors.primary }}
+                        className="flex-row items-center gap-1.5 px-4 py-2.5 rounded-2xl shadow-md shadow-emerald-700/20"
+                      >
+                        <Text className="text-white text-xs font-black">Track Order</Text>
+                        <ChevronRight size={15} color="white" />
+                      </View>
+                    ) : (
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (item.items && item.items.length > 0) {
+                            item.items.forEach(i => {
+                              if (i.product) addToCart(i.product);
+                            });
+                            handleTabSwitch('Cart');
+                          }
+                        }}
+                        style={{ backgroundColor: colors.primaryLight, borderColor: colors.primary + '30' }}
+                        className="flex-row items-center gap-1.5 px-4 py-2 rounded-2xl border"
+                      >
+                        <Text style={{ color: colors.primary }} className="text-xs font-black">Reorder Items</Text>
+                        <ChevronRight size={14} color={colors.primary} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
           />
         )}
       </View>
     );
   };
 
-  // MOCKUP 15: PROFILE VIEW
+  // MOCKUP 15: MINIMAL & AWESOME PROFILE VIEW
   const renderProfileTab = () => {
     return (
-      <View className="flex-1 px-5 pt-4 justify-between bg-white">
-        <View>
-          <Text style={{ color: colors.textMain }} className="text-lg font-black mb-6">Profile Screen</Text>
+      <ScrollView showsVerticalScrollIndicator={false} className="flex-1 bg-white" contentContainerStyle={{ flexGrow: 1, paddingBottom: 60 }}>
+        <View className="px-5 pt-8 pb-10 justify-between flex-1">
+          <View>
+            {/* Centered Circular Avatar Header */}
+            <View className="items-center justify-center mb-8">
+              <View
+                style={{ borderColor: colors.primary + '40', backgroundColor: colors.primaryLight }}
+                className="w-24 h-24 rounded-full border-4 items-center justify-center shadow-lg shadow-emerald-500/20 relative"
+              >
+                <View
+                  style={{ backgroundColor: colors.primary }}
+                  className="w-20 h-20 rounded-full items-center justify-center shadow-md"
+                >
+                  <User size={40} color="white" />
+                </View>
+                <View className="absolute bottom-0 right-0 bg-emerald-500 border-2 border-white w-6 h-6 rounded-full items-center justify-center">
+                  <Check size={12} color="white" strokeWidth={3} />
+                </View>
+              </View>
 
-          {/* Profile card avatar layout (Mockup 15) */}
-          <View
-            style={{ backgroundColor: colors.primary }}
-            className="rounded-3xl p-5 relative overflow-hidden mb-6 flex-row items-center gap-4 shadow-lg shadow-emerald-700/10"
-          >
-            <View className="w-16 h-16 rounded-full bg-white items-center justify-center shadow-md">
-              <User size={32} color={colors.primary} />
+              <View className="items-center mt-2">
+                <Text style={{ color: colors.textMain }} className="text-lg font-black tracking-tight">
+                  Karthik Kumar
+                </Text>
+                <Text style={{ color: colors.textMuted }} className="text-xs font-semibold mt-0.5">
+                  +91 98765 43210
+                </Text>
+                <View
+                  style={{ backgroundColor: colors.primaryLight, borderColor: colors.primary + '30' }}
+                  className="px-3 py-1 rounded-full border mt-2 flex-row items-center gap-1.5"
+                >
+                  <Text style={{ color: colors.primary }} className="text-[10px] font-black uppercase tracking-wider">
+                    ⚡ FreshMart Member
+                  </Text>
+                </View>
+              </View>
             </View>
-            <View>
-              <Text className="text-white font-black text-base leading-tight">Karthik Kumar</Text>
-              <Text className="text-white/80 font-bold text-[10px] mt-1">98765 43210</Text>
+
+            {/* Menu routes settings list */}
+            <View style={{ borderColor: colors.border }} className="border rounded-3xl overflow-hidden bg-white shadow-sm mb-6">
+              <TouchableOpacity
+                onPress={() => handleTabSwitch('Orders')}
+                style={{ borderBottomColor: colors.border }}
+                className="flex-row items-center justify-between px-5 py-4 border-b hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-emerald-50 border border-emerald-100">
+                    <Clipboard size={18} color={colors.primary} />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">My Orders</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => navigation.navigate('Address')}
+                style={{ borderBottomColor: colors.border }}
+                className="flex-row items-center justify-between px-5 py-4 border-b hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-blue-50 border border-blue-100">
+                    <MapPin size={18} color="#3b82f6" />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Saved Addresses</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => Alert.alert('Wallet Balance', 'Your current active wallet balance is ₹150. Cashback is automatically applied at checkout.')}
+                style={{ borderBottomColor: colors.border }}
+                className="flex-row items-center justify-between px-5 py-4 border-b hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-amber-50 border border-amber-100">
+                    <Wallet size={18} color="#d97706" />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Wallet & Cashback</Text>
+                </View>
+                <View className="flex-row items-center gap-2">
+                  <Text style={{ color: colors.primary }} className="text-xs font-black">₹150</Text>
+                  <ChevronRight size={18} color={colors.textMuted} />
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setShowNotificationModal(true)}
+                style={{ borderBottomColor: colors.border }}
+                className="flex-row items-center justify-between px-5 py-4 border-b hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-purple-50 border border-purple-100">
+                    <Bell size={18} color="#a855f7" />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Notifications</Text>
+                </View>
+                {unreadCount > 0 && (
+                  <View className="bg-red-500 rounded-full px-2 py-0.5">
+                    <Text className="text-white text-[9px] font-black">{unreadCount}</Text>
+                  </View>
+                )}
+                <ChevronRight size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => Alert.alert('Customer Support', '⚡ FreshMart Customer Helpline:\n\n📞 Toll-Free: 1800-FRESHMART\n📧 Email: support@freshmart.com\n⏰ 24/7 Live Express Support')}
+                style={{ borderBottomColor: colors.border }}
+                className="flex-row items-center justify-between px-5 py-4 border-b hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-cyan-50 border border-cyan-100">
+                    <HelpCircle size={18} color="#06b6d4" />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Help & Support</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => Alert.alert('App Settings', 'FreshMart Customer App v1.0.0 (Latest)\n\n• Theme: Light / Auto\n• Location GPS: Enabled\n• Push Notifications: Active')}
+                className="flex-row items-center justify-between px-5 py-4 hover:bg-slate-50"
+              >
+                <View className="flex-row items-center gap-3.5">
+                  <View className="p-2.5 rounded-2xl bg-slate-100 border border-slate-200">
+                    <Settings size={18} color="#64748b" />
+                  </View>
+                  <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Settings</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textMuted} />
+              </TouchableOpacity>
             </View>
           </View>
 
-          {/* Menu routes settings list (Mockup 15) */}
-          <View style={{ borderColor: colors.border }} className="border-2 rounded-2xl overflow-hidden bg-white shadow-sm">
+          {/* Logout button */}
+          <View className="pt-2">
             <TouchableOpacity
-              onPress={() => setActiveTab('Orders')}
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
+              onPress={handleLogout}
+              className="flex-row items-center justify-center border border-red-200 rounded-2xl py-4 gap-2 bg-red-50 hover:bg-red-100"
             >
-              <View className="flex-row items-center gap-3">
-                <Clipboard size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">My Orders</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => navigation.navigate('Address')}
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <MapPin size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">My Addresses</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <Wallet size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Wallet & Offers</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <Bell size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Notifications</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <HelpCircle size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Help & Support</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{ borderBottomColor: colors.border }}
-              className="flex-row items-center justify-between px-5 py-3.5 border-b hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <Info size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">About Us</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              className="flex-row items-center justify-between px-5 py-3.5 hover:bg-slate-50"
-            >
-              <View className="flex-row items-center gap-3">
-                <Settings size={18} color={colors.primary} />
-                <Text style={{ color: colors.textMain }} className="text-xs font-extrabold">Settings</Text>
-              </View>
-              <ChevronRight size={16} color={colors.textMuted} />
+              <LogOut size={18} color="#ef4444" />
+              <Text className="text-red-500 font-extrabold text-xs tracking-wider uppercase">Log Out</Text>
             </TouchableOpacity>
           </View>
         </View>
-
-        {/* Logout button */}
-        <View className="py-6">
-          <TouchableOpacity
-            onPress={handleLogout}
-            style={{ borderColor: '#ef4444' }}
-            className="flex-row items-center justify-center border-2 rounded-2xl py-4 gap-2 bg-red-500/5 cursor-pointer"
-          >
-            <LogOut size={16} color="#ef4444" />
-            <Text className="text-red-500 font-extrabold text-sm">Logout</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      </ScrollView>
     );
   };
 
@@ -1449,94 +1672,119 @@ export default function HomeScreen() {
         {renderTabContent()}
       </View>
 
-      {/* Tab Navigation Menu bar */}
-      <View
-        style={{ borderTopColor: colors.border }}
-        className="h-18 border-t flex-row justify-around items-center bg-white px-2 shadow-md"
-      >
+      {/* Sleek Floating Quick-Cart Action Bar */}
+      {getCartCount() > 0 && activeTab !== 'Cart' && (
         <TouchableOpacity
-          onPress={() => setActiveTab('Home')}
-          className="items-center py-2 flex-1"
+          onPress={() => handleTabSwitch('Cart')}
+          activeOpacity={0.92}
+          style={{
+            backgroundColor: '#16221e',
+            borderColor: '#22c55e30',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 10 },
+            shadowOpacity: 0.25,
+            shadowRadius: 16,
+            elevation: 10,
+          }}
+          className="mx-4 mb-2.5 px-4 py-2.5 rounded-2xl border flex-row items-center justify-between"
         >
-          <Home size={24} color={activeTab === 'Home' ? colors.primary : colors.textMuted} />
-          <Text
-            style={{ color: activeTab === 'Home' ? colors.primary : colors.textMuted }}
-            className="text-[10px] font-bold mt-1.5"
-          >
-            Home
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab('Categories')}
-          className="items-center py-2 flex-1"
-        >
-          <Grid size={24} color={activeTab === 'Categories' ? colors.primary : colors.textMuted} />
-          <Text
-            style={{ color: activeTab === 'Categories' ? colors.primary : colors.textMuted }}
-            className="text-[10px] font-bold mt-1.5"
-          >
-            Categories
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab('Cart')}
-          className="items-center py-2 flex-1 relative"
-        >
-          <ShoppingCart size={24} color={activeTab === 'Cart' ? colors.primary : colors.textMuted} />
-          <Text
-            style={{ color: activeTab === 'Cart' ? colors.primary : colors.textMuted }}
-            className="text-[10px] font-bold mt-1.5"
-          >
-            Cart
-          </Text>
-          {getCartCount() > 0 && (
+          {/* Left: Neon Green Badge + Items & Total Price */}
+          <View className="flex-row items-center gap-3">
             <View
-              style={{
-                position: 'absolute',
-                right: 20,
-                top: 4,
-                backgroundColor: '#ef4444',
-                width: 18,
-                height: 18,
-                borderRadius: 9,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderWidth: 1.5,
-                borderColor: 'white'
-              }}
+              style={{ backgroundColor: colors.primary }}
+              className="w-10 h-10 rounded-xl items-center justify-center shadow-sm shadow-emerald-500/40"
             >
-              <Text className="text-[8px] text-white font-black">{getCartCount()}</Text>
+              <ShoppingBag size={20} color="white" />
             </View>
-          )}
-        </TouchableOpacity>
+            <View>
+              <View className="flex-row items-center gap-1.5">
+                <Text className="text-slate-300 text-[11px] font-bold">
+                  {getCartCount()} {getCartCount() === 1 ? 'ITEM' : 'ITEMS'}
+                </Text>
+                <Text className="text-slate-500 text-[10px]">•</Text>
+                <Text className="text-white text-sm font-black">
+                  ₹{getCartTotal()}
+                </Text>
+              </View>
+              <Text style={{ color: colors.primary }} className="text-[10px] font-extrabold mt-0.5">
+                ⚡ 10-15 Min Express Delivery
+              </Text>
+            </View>
+          </View>
 
-        <TouchableOpacity
-          onPress={() => setActiveTab('Orders')}
-          className="items-center py-2 flex-1"
-        >
-          <Clipboard size={24} color={activeTab === 'Orders' ? colors.primary : colors.textMuted} />
-          <Text
-            style={{ color: activeTab === 'Orders' ? colors.primary : colors.textMuted }}
-            className="text-[10px] font-bold mt-1.5"
+          {/* Right: Vibrant View Cart Pill Button */}
+          <View
+            style={{ backgroundColor: colors.primary }}
+            className="flex-row items-center px-4 py-2 rounded-xl gap-1 shadow-sm shadow-emerald-600/30"
           >
-            Orders
-          </Text>
+            <Text className="text-white text-xs font-black">View Cart</Text>
+            <ChevronRight size={15} color="white" className="stroke-[3]" />
+          </View>
         </TouchableOpacity>
+      )}
 
-        <TouchableOpacity
-          onPress={() => setActiveTab('Profile')}
-          className="items-center py-2 flex-1"
-        >
-          <User size={24} color={activeTab === 'Profile' ? colors.primary : colors.textMuted} />
-          <Text
-            style={{ color: activeTab === 'Profile' ? colors.primary : colors.textMuted }}
-            className="text-[10px] font-bold mt-1.5"
-          >
-            Profile
-          </Text>
-        </TouchableOpacity>
+      {/* Docked Bottom Tab Navigation Menu Bar */}
+      <View
+        style={{
+          borderTopColor: '#f1f5f9',
+          shadowColor: '#64748b',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.1,
+          shadowRadius: 10,
+          elevation: 10,
+        }}
+        className="h-16 border-t flex-row justify-around items-center bg-white px-1 z-50"
+      >
+        {[
+          { id: 'Home', label: 'Home', icon: Home },
+          { id: 'Categories', label: 'Category', icon: Grid },
+          { id: 'Cart', label: 'Cart', icon: ShoppingCart, badge: getCartCount() },
+          { id: 'Orders', label: 'Orders', icon: Clipboard },
+          { id: 'Profile', label: 'Profile', icon: User },
+        ].map((tab) => {
+          const IconComponent = tab.icon;
+          const isActive = activeTab === tab.id;
+
+          return (
+            <TouchableOpacity
+              key={tab.id}
+              onPress={() => handleTabSwitch(tab.id)}
+              activeOpacity={0.75}
+              className="items-center justify-center flex-1 py-1"
+            >
+              <View
+                style={{
+                  backgroundColor: isActive ? colors.primaryLight : 'transparent',
+                }}
+                className="px-3 py-1.5 rounded-2xl items-center justify-center relative"
+              >
+                <IconComponent
+                  size={20}
+                  color={isActive ? colors.primary : '#64748b'}
+                  strokeWidth={isActive ? 2.5 : 1.8}
+                />
+                <Text
+                  style={{ color: isActive ? colors.primary : '#64748b' }}
+                  numberOfLines={1}
+                  className={`text-[10px] ${isActive ? 'font-black' : 'font-semibold'} mt-0.5 text-center`}
+                >
+                  {tab.label}
+                </Text>
+
+                {/* Cart Badge Overlay */}
+                {tab.id === 'Cart' && tab.badge > 0 && (
+                  <View
+                    className="absolute -top-1 -right-1 bg-red-500 px-1.5 py-0.5 rounded-full border-2 border-white items-center justify-center min-w-[16px] min-h-[16px]"
+                  >
+                    <Text className="text-[7.5px] text-white font-extrabold leading-none">
+                      {tab.badge > 99 ? '99+' : tab.badge}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Premium Foreground Sliding Toast Notification Banner */}
@@ -1595,6 +1843,148 @@ export default function HomeScreen() {
           )}
         </Animated.View>
       )}
+
+      {/* Notifications Drawer Modal */}
+      <Modal
+        visible={showNotificationModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowNotificationModal(false)}
+      >
+        <View className="flex-1 bg-black/50 justify-end">
+          <View className="bg-white rounded-t-[32px] p-6 max-h-[80%] border-t border-slate-100 shadow-2xl">
+            {/* Modal Header */}
+            <View className="flex-row items-center justify-between pb-4 border-b border-slate-100 mb-4">
+              <View className="flex-row items-center gap-2.5">
+                <View style={{ backgroundColor: colors.primaryLight }} className="p-2.5 rounded-2xl">
+                  <Bell size={20} color={colors.primary} />
+                </View>
+                <View>
+                  <Text style={{ color: colors.textMain }} className="text-lg font-black">
+                    Notification Center
+                  </Text>
+                  <Text style={{ color: colors.textMuted }} className="text-xs font-semibold">
+                    {unreadCount > 0 ? `You have ${unreadCount} unread update${unreadCount > 1 ? 's' : ''}` : 'You are all caught up!'}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowNotificationModal(false)}
+                className="w-9 h-9 bg-slate-100 rounded-full items-center justify-center"
+              >
+                <X size={18} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Notifications List */}
+            <ScrollView showsVerticalScrollIndicator={false} className="space-y-3">
+              {loadingNotifications ? (
+                <View className="py-12 items-center justify-center">
+                  <ActivityIndicator size="large" color={colors.primary} />
+                  <Text className="text-xs text-slate-400 font-semibold mt-3">Loading updates...</Text>
+                </View>
+              ) : serverNotifications.length === 0 ? (
+                <View className="py-10 items-center justify-center px-4">
+                  <View className="w-16 h-16 rounded-full bg-slate-100 items-center justify-center mb-3">
+                    <Bell size={28} color="#94a3b8" />
+                  </View>
+                  <Text className="text-slate-800 text-sm font-bold text-center">No notifications yet</Text>
+                  <Text className="text-slate-400 text-xs text-center mt-1 leading-relaxed">
+                    We'll notify you here about your live grocery orders and exclusive special offers!
+                  </Text>
+                </View>
+              ) : (
+                serverNotifications.map((item) => {
+                  const isOrder = item.type === 'ORDER';
+                  const isUnread = !item.read;
+
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        markNotificationsAsRead([item.id]);
+                        setShowNotificationModal(false);
+                        if (isOrder) {
+                          setActiveTab('Orders');
+                          triggerToast(item.title, item.body, null, false);
+                        } else {
+                          if (item.metadata?.couponCode) {
+                            setCouponInput(item.metadata.couponCode);
+                            triggerToast(item.title, `Promo code ${item.metadata.couponCode} ready to apply!`, null, false);
+                          } else {
+                            triggerToast(item.title, item.body, null, false);
+                          }
+                        }
+                      }}
+                      className={`p-4 rounded-2xl border flex-row items-start gap-3 mb-3 ${isUnread
+                        ? isOrder
+                          ? 'bg-emerald-50/80 border-emerald-200 shadow-sm'
+                          : 'bg-amber-50/80 border-amber-200 shadow-sm'
+                        : 'bg-slate-50/90 border-slate-200/70 opacity-75'
+                        }`}
+                    >
+                      <View
+                        className={`w-10 h-10 rounded-xl items-center justify-center ${isUnread
+                          ? isOrder
+                            ? 'bg-emerald-500'
+                            : 'bg-amber-500'
+                          : 'bg-slate-200'
+                          }`}
+                      >
+                        {isOrder ? (
+                          <ShoppingBag size={20} color={isUnread ? 'white' : '#64748b'} />
+                        ) : (
+                          <Tag size={20} color={isUnread ? 'white' : '#64748b'} />
+                        )}
+                      </View>
+                      <View className="flex-1">
+                        <View className="flex-row items-center justify-between">
+                          <View className="flex-row items-center flex-1 pr-2">
+                            <Text
+                              className={`${isUnread ? 'text-slate-900 font-black' : 'text-slate-700 font-bold'
+                                } text-xs`}
+                              numberOfLines={1}
+                            >
+                              {item.title}
+                            </Text>
+                            {isUnread && (
+                              <View className={`w-2 h-2 rounded-full ml-1.5 ${isOrder ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                            )}
+                          </View>
+                          <Text className="text-slate-400 text-[9px] font-bold">
+                            {formatTimeAgo(item.createdAt)}
+                          </Text>
+                        </View>
+                        <Text className="text-slate-600 text-[11px] font-medium mt-1 leading-relaxed">
+                          {item.body}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            {/* Bottom Actions */}
+            {serverNotifications.length > 0 && unreadCount > 0 && (
+              <View className="pt-4 mt-2 border-t border-slate-100">
+                <TouchableOpacity
+                  onPress={() => {
+                    markNotificationsAsRead(serverNotifications.map(n => n.id));
+                    setShowNotificationModal(false);
+                    triggerToast("FreshMart Notice", "All notifications marked as read.", null, false);
+                  }}
+                  style={{ backgroundColor: colors.primary }}
+                  className="w-full py-3.5 rounded-2xl items-center justify-center shadow-md shadow-emerald-700/20"
+                >
+                  <Text className="text-white font-extrabold text-xs">Mark All as Read</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

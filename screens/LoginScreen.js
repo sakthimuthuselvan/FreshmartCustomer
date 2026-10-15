@@ -2,8 +2,6 @@ import React, { useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
-  Text,
-  TextInput,
   TouchableOpacity,
   View,
   Image,
@@ -11,6 +9,8 @@ import {
   StatusBar,
   ActivityIndicator
 } from "react-native";
+import Text from "../components/AppText";
+import TextInput from "../components/AppTextInput";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import { useTheme } from "../src/context/ThemeContext";

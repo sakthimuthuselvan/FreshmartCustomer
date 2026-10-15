@@ -1,5 +1,8 @@
 import "./global.css";
-import React from "react";
+import React, { useState } from "react";
+import { View, TouchableOpacity, Modal, StyleSheet } from "react-native";
+import Text from "./components/AppText";
+import NetworkLogger from "react-native-network-logger";
 import { NavigationContainer } from "@react-navigation/native";
 import { createStackNavigator } from '@react-navigation/stack';
 import { ThemeProvider } from "./src/context/ThemeContext";
@@ -25,15 +28,18 @@ import OutsideRadiusScreen from "./screens/OutsideRadiusScreen";
 import MaintenanceScreen from "./screens/MaintenanceScreen";
 import SelectLocationScreen from "./screens/SelectLocationScreen";
 import SearchScreen from "./screens/SearchScreen";
+import ProfileScreen from "./screens/ProfileScreen";
 
 const Stack = createStackNavigator();
 
 export default function App() {
+  const [showNetworkLogger, setShowNetworkLogger] = useState(false);
+
   return (
     <ThemeProvider>
-      <CartProvider>
-        <SafeAreaProvider>
-          <NavigationContainer>
+      <SafeAreaProvider>
+        <NavigationContainer>
+          <CartProvider>
             <Stack.Navigator
               screenOptions={{
                 headerShown: false,
@@ -60,10 +66,87 @@ export default function App() {
               <Stack.Screen options={{ animation: "fade" }} name="Maintenance" component={MaintenanceScreen} />
               <Stack.Screen options={{ animation: "fade" }} name="SelectLocation" component={SelectLocationScreen} />
               <Stack.Screen options={{ animation: "fade" }} name="Search" component={SearchScreen} />
+              <Stack.Screen options={{ animation: "fade" }} name="Profile" component={ProfileScreen} />
             </Stack.Navigator>
-          </NavigationContainer>
-        </SafeAreaProvider>
-      </CartProvider>
+          </CartProvider>
+        </NavigationContainer>
+
+        {__DEV__ && (
+          <>
+            <TouchableOpacity
+              style={styles.floatingLoggerBtn}
+              onPress={() => setShowNetworkLogger(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.loggerBtnText}>🌐 Network</Text>
+            </TouchableOpacity>
+
+            <Modal visible={showNetworkLogger} animationType="slide">
+              <View style={{ flex: 1, backgroundColor: '#0f172a' }}>
+                <View style={styles.loggerHeader}>
+                  <Text style={styles.loggerTitle}>In-App Network Inspector</Text>
+                  <TouchableOpacity
+                    style={styles.closeBtn}
+                    onPress={() => setShowNetworkLogger(false)}
+                  >
+                    <Text style={styles.closeBtnText}>✕ Close</Text>
+                  </TouchableOpacity>
+                </View>
+                <NetworkLogger theme="dark" />
+              </View>
+            </Modal>
+          </>
+        )}
+      </SafeAreaProvider>
     </ThemeProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  floatingLoggerBtn: {
+    position: 'absolute',
+    top: 60,
+    right: 15,
+    backgroundColor: '#000000e0',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    zIndex: 99999,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  loggerBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  loggerHeader: {
+    height: 54,
+    backgroundColor: '#1e293b',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+  },
+  loggerTitle: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  closeBtn: {
+    backgroundColor: '#ef4444',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  closeBtnText: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+});

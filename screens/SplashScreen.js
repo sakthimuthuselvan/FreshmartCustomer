@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
-import { Image, Text, View, StatusBar } from "react-native";
+import { Image, View, StatusBar } from "react-native";
+import Text from "../components/AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import { useTheme } from "../src/context/ThemeContext";

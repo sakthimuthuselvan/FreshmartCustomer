@@ -1,6 +1,14 @@
-/**
- * @format
- */
+import { enableScreens } from 'react-native-screens';
+enableScreens();
+
+import { startNetworkLogging } from 'react-native-network-logger';
+
+startNetworkLogging();
+
+if (__DEV__) {
+  require('./ReactotronConfig');
+  global.XMLHttpRequest = global.originalXMLHttpRequest || global.XMLHttpRequest;
+}
 
 import firebase from '@react-native-firebase/app';
 import messaging from '@react-native-firebase/messaging';

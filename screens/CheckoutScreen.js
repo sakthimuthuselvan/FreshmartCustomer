@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
   StatusBar
 } from 'react-native';
+import Text from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
@@ -56,8 +56,13 @@ export default function CheckoutScreen() {
     setLoading(true);
     setError('');
 
-    // Format cart items
-    const orderItems = cart.map((item) => ({
+    // Format available cart items (excluding out of stock items)
+    const availableItems = cart.filter((item) => {
+      const isOutOfStock = item.product.stock !== undefined ? item.product.stock <= 0 : (item.product.isAvailable === false || item.product.isActive === false);
+      return !isOutOfStock;
+    });
+
+    const orderItems = availableItems.map((item) => ({
       productId: item.product._id,
       quantity: item.quantity,
     }));
@@ -80,7 +85,7 @@ export default function CheckoutScreen() {
     try {
       const res = await api.post('/orders', orderPayload);
       const newOrder = res.data.order;
-      
+
       // Reset the local cart state
       clearCart();
 
@@ -102,11 +107,11 @@ export default function CheckoutScreen() {
       <StatusBar backgroundColor="#ffffff" barStyle="dark-content" />
 
       {/* Header bar (Mockup 11) */}
-      <View 
+      <View
         style={{ borderBottomColor: colors.border }}
         className="px-5 py-4 border-b flex-row items-center gap-3 bg-white"
       >
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => navigation.goBack()}
           className="p-1 rounded-full hover:bg-slate-100"
         >
@@ -121,16 +126,16 @@ export default function CheckoutScreen() {
           <View className="space-y-2.5">
             <View className="flex-row items-center justify-between">
               <Text style={{ color: colors.textMain }} className="text-xs font-black uppercase tracking-wider">Deliver to</Text>
-              <TouchableOpacity onPress={() => navigation.navigate('Address')}>
+              <TouchableOpacity onPress={() => navigation.navigate('Address', { fromCheckout: true, returnScreen: 'Checkout' })}>
                 <Text style={{ color: colors.primary }} className="text-xs font-extrabold">Change</Text>
               </TouchableOpacity>
             </View>
-            
-            <View 
+
+            <View
               style={{ borderColor: colors.border, backgroundColor: colors.card }}
               className="border-2 rounded-2xl p-4 flex-row items-center gap-3.5 shadow-sm"
             >
-              <View 
+              <View
                 style={{ backgroundColor: colors.primaryLight }}
                 className="p-2.5 rounded-full"
               >
@@ -145,7 +150,7 @@ export default function CheckoutScreen() {
           {/* Pricing Summary card (Mockup 11) */}
           <View className="space-y-2.5">
             <Text style={{ color: colors.textMain }} className="text-xs font-black uppercase tracking-wider">Order Summary</Text>
-            <View 
+            <View
               style={{ backgroundColor: colors.card, borderColor: colors.border }}
               className="rounded-2xl p-4 border-2 space-y-3 shadow-sm"
             >
@@ -185,8 +190,8 @@ export default function CheckoutScreen() {
                   <CreditCard size={18} color={paymentMethod === 'UPI' ? colors.primary : colors.textMuted} />
                   <Text style={{ color: colors.textMain }} className="text-xs font-black">UPI / Online Payment</Text>
                 </View>
-                <View 
-                  style={{ 
+                <View
+                  style={{
                     borderColor: paymentMethod === 'UPI' ? colors.primary : colors.border,
                     backgroundColor: paymentMethod === 'UPI' ? colors.primary : 'transparent'
                   }}
@@ -206,8 +211,8 @@ export default function CheckoutScreen() {
                   <CreditCard size={18} color={paymentMethod === 'COD' ? colors.primary : colors.textMuted} />
                   <Text style={{ color: colors.textMain }} className="text-xs font-black">Cash on Delivery</Text>
                 </View>
-                <View 
-                  style={{ 
+                <View
+                  style={{
                     borderColor: paymentMethod === 'COD' ? colors.primary : colors.border,
                     backgroundColor: paymentMethod === 'COD' ? colors.primary : 'transparent'
                   }}
@@ -226,7 +231,7 @@ export default function CheckoutScreen() {
       </ScrollView>
 
       {/* Place Order CTA Card (Mockup 11) */}
-      <View 
+      <View
         style={{ borderTopColor: colors.border }}
         className="px-6 py-4 border-t bg-white items-center gap-3"
       >

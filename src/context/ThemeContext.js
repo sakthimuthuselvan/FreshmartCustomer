@@ -1,6 +1,6 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import { DEFAULT_THEME } from '../constants/theme';
-import axios from 'axios';
+import api from '../api/api';
 
 const ThemeContext = createContext();
 
@@ -13,8 +13,8 @@ export const ThemeProvider = ({ children }) => {
     const fetchCustomTheme = async () => {
       setIsLoading(true);
       try {
-        // Point to our backend machine IP
-        const response = await axios.get('http://10.209.116.102:3000/api/theme', { timeout: 3000 });
+        // Point to our backend machine API
+        const response = await api.get('/theme', { timeout: 3000 });
         if (response.data && response.data.colors) {
           setColors({
             ...DEFAULT_THEME,

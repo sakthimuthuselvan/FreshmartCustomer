@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
   Linking,
   StatusBar,
-  Dimensions
+  Dimensions,
+  BackHandler
 } from 'react-native';
+import Text from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
@@ -65,6 +66,23 @@ export default function TrackingScreen() {
   const riderProgress = useSharedValue(0);
   // Pulsing ring scale for pins
   const pulseScale = useSharedValue(1);
+
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Home');
+    }
+  };
+
+  useEffect(() => {
+    const backAction = () => {
+      handleBack();
+      return true;
+    };
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [navigation]);
 
   useEffect(() => {
     fetchOrderDetails();
@@ -318,7 +336,7 @@ export default function TrackingScreen() {
         >
           <View className="flex-row items-center gap-3 px-5 py-3">
             <TouchableOpacity
-              onPress={() => navigation.goBack()}
+              onPress={handleBack}
               className="p-2 rounded-full bg-white/90 shadow-md border border-slate-100"
               hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >

@@ -1,10 +1,10 @@
 import React from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
   StatusBar
 } from 'react-native';
+import Text from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../src/context/ThemeContext';
@@ -21,13 +21,13 @@ export default function OrderSuccessScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }}>
       <StatusBar backgroundColor="#ffffff" barStyle="dark-content" />
       <View className="flex-1 items-center justify-center px-6 py-12">
-        
+
         {/* Success Checkmark Circle (Mockup 12) */}
-        <View 
+        <View
           style={{ backgroundColor: colors.primaryLight }}
           className="w-24 h-24 rounded-full items-center justify-center mb-8 shadow-sm"
         >
-          <View 
+          <View
             style={{ backgroundColor: colors.primary }}
             className="w-16 h-16 rounded-full items-center justify-center shadow-md animate-pulse"
           >
@@ -45,7 +45,7 @@ export default function OrderSuccessScreen() {
         </View>
 
         {/* Quick info card (Mockup 12) */}
-        <View 
+        <View
           style={{ backgroundColor: colors.card, borderColor: colors.border }}
           className="border-2 rounded-2xl p-5 w-full flex-row justify-around items-center shadow-sm mb-12"
         >
@@ -53,9 +53,9 @@ export default function OrderSuccessScreen() {
             <Text style={{ color: colors.textMuted }} className="text-[10px] font-bold uppercase tracking-wider">Order ID</Text>
             <Text style={{ color: colors.textMain }} className="text-sm font-black mt-1">{orderNumber}</Text>
           </View>
-          
+
           <View style={{ backgroundColor: colors.border }} className="w-px h-8" />
-          
+
           <View className="items-center">
             <Text style={{ color: colors.textMuted }} className="text-[10px] font-bold uppercase tracking-wider">Delivery in</Text>
             <Text style={{ color: colors.primary }} className="text-sm font-black mt-1">10-20 mins</Text>
